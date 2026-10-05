@@ -22,7 +22,9 @@ const SCHEMA = new Schema([
 let tablePromise: Promise<lancedb.Table> | null = null;
 
 async function openTable(): Promise<lancedb.Table> {
-  const db = await lancedb.connect(config.lancedbDir);
+  // The API writes and the worker reads in separate processes; check for new rows on every read
+  // so a cached table never misses documents seeded after it was opened
+  const db = await lancedb.connect(config.lancedbDir, { readConsistencyInterval: 0 });
   if (!(await db.tableNames()).includes(TABLE_NAME)) {
     return db.createEmptyTable(TABLE_NAME, SCHEMA);
   }

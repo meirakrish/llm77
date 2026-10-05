@@ -3,11 +3,14 @@ import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
+import cors from 'cors';
 import { streamChannel, StreamEvent } from './events';
 import { config } from './config';
 
 const app = express();
 
+// Let a frontend served from another machine/origin call the API (including the SSE stream)
+app.use(cors({ origin: config.corsOrigins.includes('*') ? true : config.corsOrigins }));
 app.use(express.json());
 
 // 1. Establish Redis connection and initialize the BullMQ Job Queue

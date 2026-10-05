@@ -75,8 +75,28 @@ The system operates as two decoupled processes. Open two separate terminal insta
 
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
-### 3. Configuration
-Both processes read their settings from environment variables; the defaults match a standard local setup.
+### 3. Frontend (optional)
+A small web UI in `frontend/` for asking questions (streamed), analyzing messages and adding knowledge. Your queries and results are saved in the browser's local storage.
+
+**Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Then open http://localhost:5173.
+
+**Separate machines:** build the frontend with the backend's URL baked in, and allow the frontend's origin on the backend.
+```bash
+# Frontend machine: produces static files in frontend/dist/ to serve with any web server
+VITE_API_URL=http://<backend-host>:3000 npm run build
+
+# Backend machine: allow the address the frontend is served from
+CORS_ORIGINS=http://<frontend-host> npm run dev
+```
+
+### 4. Configuration
+The API and worker read their settings from environment variables; the defaults match a standard local setup.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -87,6 +107,7 @@ Both processes read their settings from environment variables; the defaults matc
 | `LLM_MODEL` | `qwen2.5:1.5b` | Generation model |
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model (the vector table assumes 768 dimensions) |
 | `LANCEDB_DIR` | `./.lancedb` | LanceDB storage directory |
+| `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
 
 Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first.
 
@@ -148,6 +169,7 @@ curl http://localhost:3000/api/jobs/<jobId>
 
 ```text
 ├── package.json          # Dependencies & development scripts
+├── frontend              # Standalone Vite web UI (own package.json)
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
     ├── config.ts         # Environment-driven settings & Ollama client
