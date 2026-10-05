@@ -1,7 +1,7 @@
 import { UnrecoverableError } from 'bullmq';
 import { GenerateResponse } from 'ollama';
 import { z } from 'zod';
-import { ollama } from '../config';
+import { ollama } from '../ollama-client';
 import { AnalysisResponseSchema } from '../schema';
 import { Provider, Usage } from './types';
 
@@ -21,8 +21,9 @@ function usageOf(response: GenerateResponse): Usage {
 }
 
 export const ollamaProvider: Provider = {
-  async streamText(model, prompt, onToken) {
+  async streamText(model, prompt, onToken, signal) {
     const parts = await ollama.generate({ model, prompt, stream: true });
+    signal?.addEventListener('abort', () => parts.abort(), { once: true });
 
     let text = '';
     let finalPart: GenerateResponse | undefined;

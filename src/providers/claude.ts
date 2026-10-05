@@ -89,15 +89,18 @@ async function withErrors<T>(run: () => Promise<T>): Promise<T> {
 }
 
 export const claudeProvider: Provider = {
-  streamText(model, prompt, onToken) {
+  streamText(model, prompt, onToken, signal) {
     return withErrors(async () => {
       const started = Date.now();
-      const stream = getClient().beta.messages.stream({
-        model,
-        max_tokens: MAX_TOKENS,
-        messages: [{ role: 'user', content: prompt }],
-        ...requestOptions(model)
-      });
+      const stream = getClient().beta.messages.stream(
+        {
+          model,
+          max_tokens: MAX_TOKENS,
+          messages: [{ role: 'user', content: prompt }],
+          ...requestOptions(model)
+        },
+        { signal }
+      );
 
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') await onToken(event.delta.text);
@@ -110,26 +113,29 @@ export const claudeProvider: Provider = {
     });
   },
 
-  analyze(model, text) {
+  analyze(model, text, signal) {
     return withErrors(async () => {
       const started = Date.now();
       const options = requestOptions(model);
-      const message = await getClient().beta.messages.parse({
-        model,
-        max_tokens: MAX_TOKENS,
-        messages: [
-          {
-            role: 'user',
-            content: `Analyze the customer message or log entry below for an internal support team. Summarize it in one sentence, pick the best category and urgency, and list concrete action items for the team (an empty list if none are needed).
+      const message = await getClient().beta.messages.parse(
+        {
+          model,
+          max_tokens: MAX_TOKENS,
+          messages: [
+            {
+              role: 'user',
+              content: `Analyze the customer message or log entry below for an internal support team. Summarize it in one sentence, pick the best category and urgency, and list concrete action items for the team (an empty list if none are needed).
 
 <message>
 ${text}
 </message>`
-          }
-        ],
-        ...options,
-        output_config: { ...('output_config' in options ? options.output_config : {}), format: betaZodOutputFormat(AnalysisResponseSchema) }
-      });
+            }
+          ],
+          ...options,
+          output_config: { ...('output_config' in options ? options.output_config : {}), format: betaZodOutputFormat(AnalysisResponseSchema) }
+        },
+        { signal }
+      );
 
       checkStopReason(message);
       if (!message.parsed_output) {

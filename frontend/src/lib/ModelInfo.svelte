@@ -36,14 +36,14 @@
     {#if info === 'unreachable'}
       <dt>Status</dt>
       <dd><span class="dot off"></span>Backend unreachable</dd>
-    {:else if !info.workerOnline}
-      <dt>Status</dt>
-      <dd><span class="dot off"></span>Worker offline. Queries will wait in the queue until it starts.</dd>
     {:else}
       {#if info.llmModel}{@render modelRow('Model', info.llmModel)}{/if}
       {#if info.embedModel}{@render modelRow('Embeddings', info.embedModel)}{/if}
       <dt>Ollama</dt>
-      <dd>{info.ollamaVersion ?? 'unknown'}</dd>
+      <dd>
+        <span class="dot" class:ok={!info.error} class:off={!!info.error}></span>
+        {info.error ? `Problem: ${info.error}` : (info.ollamaVersion ?? 'unknown')}
+      </dd>
       {#if info.claude}
         <dt>Claude</dt>
         <dd>
@@ -57,8 +57,8 @@
       {/if}
       <dt>Worker</dt>
       <dd>
-        <span class="dot" class:ok={!info.error} class:off={!!info.error}></span>
-        {info.error ? `Online, but Ollama reported: ${info.error}` : 'Online'}
+        <span class="dot" class:ok={info.workerOnline} class:off={!info.workerOnline}></span>
+        {info.workerOnline ? 'Online' : 'Offline. Queries will wait in the queue until it starts.'}
       </dd>
     {/if}
   </dl>

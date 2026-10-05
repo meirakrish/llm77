@@ -6,8 +6,8 @@ export type StreamEvent =
   | { type: 'done'; text: string; model: string; metrics: Record<string, number> }
   | { type: 'error'; message: string };
 
-// Redis key where the worker advertises the models it actually runs (the API may be configured differently)
-export const workerInfoKey = (queueName: string) => `${queueName}:worker-info`;
+// Redis key the backend sets while the worker's heartbeats keep arriving
+export const workerHeartbeatKey = (queueName: string) => `${queueName}:worker-heartbeat`;
 
 export interface ModelInfo {
   name: string;
@@ -31,7 +31,8 @@ export interface ClaudeInfo {
   error?: string;
 }
 
-export interface WorkerInfo {
+// What the backend can run, as seen from its connections to Ollama and Anthropic
+export interface ModelsInfo {
   llmModel: ModelInfo;
   embedModel: ModelInfo;
   // Installed Ollama models that can generate text (embedding-only models excluded)

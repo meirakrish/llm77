@@ -1,6 +1,7 @@
 import * as lancedb from '@lancedb/lancedb';
 import { Field, FixedSizeList, Float32, Schema, Utf8 } from 'apache-arrow';
-import { config, ollama } from './config';
+import { config } from './config';
+import { ollama } from './ollama-client';
 
 const TABLE_NAME = 'knowledge_base';
 // Vector width of nomic-embed-text; must change together with EMBED_MODEL (and a fresh table)
@@ -22,8 +23,8 @@ const SCHEMA = new Schema([
 let tablePromise: Promise<lancedb.Table> | null = null;
 
 async function openTable(): Promise<lancedb.Table> {
-  // The API writes and the worker reads in separate processes; check for new rows on every read
-  // so a cached table never misses documents seeded after it was opened
+  // Only the backend opens the table now, but check for new rows on every read anyway, so a cached table
+  // never misses documents written by another process (e.g. a second API instance) sharing the directory
   const db = await lancedb.connect(config.lancedbDir, { readConsistencyInterval: 0 });
   if (!(await db.tableNames()).includes(TABLE_NAME)) {
     return db.createEmptyTable(TABLE_NAME, SCHEMA);

@@ -4,8 +4,10 @@ import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
 import cors from 'cors';
-import { streamChannel, StreamEvent, workerInfoKey, WorkerInfo, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
+import { streamChannel, StreamEvent, workerHeartbeatKey, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
 import { config } from './config';
+import { getModelsInfo } from './model-info';
+import { createInternalRouter } from './internal-api';
 
 const app = express();
 
@@ -27,29 +29,26 @@ const llmQueue = new Queue(config.queueName, { connection: redisConnection, defa
 // Claude jobs get their own queue so they don't wait behind (or block) local GPU jobs
 const cloudQueue = new Queue(config.cloudQueueName, { connection: redisConnection, defaultJobOptions });
 
-async function readWorkerInfo(): Promise<WorkerInfo | null> {
-  const raw = await redisConnection.get(workerInfoKey(config.queueName));
-  return raw ? JSON.parse(raw) : null;
-}
+const isWorkerOnline = async () => (await redisConnection.exists(workerHeartbeatKey(config.queueName))) === 1;
 
-type Target = { model?: string; queue: Queue; jobId?: string } | { error: string };
+type Target = { model: string; queue: Queue; jobId?: string } | { error: string };
 
-// Validate the requested model and pick its queue. Claude models must be on the allowlist and accessible
-// with the worker's credentials, so a browser can't run up charges on arbitrary models.
+// Validate the requested model and pick its queue; no model means the default local one. Claude models must be
+// on the allowlist and accessible with the backend's credentials, so a browser can't run up charges on arbitrary models.
 async function resolveTarget(model: unknown): Promise<Target> {
-  if (model === undefined || model === null || model === '') return { queue: llmQueue };
+  if (model === undefined || model === null || model === '') return { model: config.llmModel, queue: llmQueue };
   if (typeof model !== 'string') return { error: 'model must be a string.' };
 
-  // With no worker online the job waits in the queue, and the worker reports problems when it runs it
-  const info = await readWorkerInfo();
+  const info = await getModelsInfo();
   if (isClaudeModel(model)) {
     if (!config.claudeModels.includes(model)) return { error: `Model ${model} is not enabled.` };
-    if (info?.claude && !info.claude.models.some((m) => m.id === model)) {
-      return { error: `Model ${model} is not available: ${info.claude.error ?? "not accessible with the worker's credentials"}` };
+    if (!info.claude.models.some((m) => m.id === model)) {
+      return { error: `Model ${model} is not available: ${info.claude.error ?? 'not accessible with the configured credentials'}` };
     }
     return { model, queue: cloudQueue, jobId: CLOUD_JOB_PREFIX + crypto.randomUUID() };
   }
-  if (info?.localModels && !info.localModels.includes(model)) return { error: `Model ${model} is not installed on the worker.` };
+  // If Ollama couldn't be listed, let the job queue; it fails or retries when it runs
+  if (!info.error && !info.localModels.includes(model)) return { error: `Model ${model} is not installed in Ollama.` };
   return { model, queue: llmQueue };
 }
 
@@ -150,33 +149,27 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
   res.on('close', cleanup);
 });
 
-// Endpoint describing the models the worker runs; workerOnline is false if no worker has reported recently
+// Endpoint describing the available models; workerOnline is false if the worker hasn't sent a heartbeat recently
 app.get('/api/info', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const info = await readWorkerInfo();
-    res.json(info ? { workerOnline: true, ...info } : { workerOnline: false });
+    const [workerOnline, info] = await Promise.all([isWorkerOnline(), getModelsInfo()]);
+    res.json({ workerOnline, ...info });
   } catch (error) {
     console.error('Info fetch error:', error);
-    res.status(500).json({ error: 'Failed to look up worker info.' });
+    res.status(500).json({ error: 'Failed to look up model info.' });
   }
 });
 
-// Endpoint listing the models a prompt can run on: the worker's local models plus enabled, accessible Claude models
+// Endpoint listing the models a prompt can run on: installed local models plus enabled, accessible Claude models
 app.get('/api/models', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const info = await readWorkerInfo();
-    if (!info) {
-      res.json({ workerOnline: false, defaultModel: null, models: [] });
-      return;
-    }
+    const [workerOnline, info] = await Promise.all([isWorkerOnline(), getModelsInfo()]);
     res.json({
-      workerOnline: true,
-      defaultModel: info.llmModel.name,
+      workerOnline,
+      defaultModel: config.llmModel,
       models: [
-        ...(info.localModels ?? []).map((id) => ({ id, name: id, provider: 'ollama' })),
-        ...(info.claude?.models ?? [])
-          .filter((m) => config.claudeModels.includes(m.id))
-          .map((m) => ({ ...m, provider: 'claude' }))
+        ...info.localModels.map((id) => ({ id, name: id, provider: 'ollama' })),
+        ...info.claude.models.filter((m) => config.claudeModels.includes(m.id)).map((m) => ({ ...m, provider: 'claude' }))
       ]
     });
   } catch (error) {
@@ -268,6 +261,10 @@ app.post('/api/analyze', async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: 'Failed to queue the analysis request.' });
   }
 });
+
+// Endpoints the worker calls to run models and search the knowledge base; all external services are reached from here
+app.use('/internal', createInternalRouter(redisConnection));
+if (!config.internalToken) console.warn('INTERNAL_API_TOKEN is not set: the worker cannot reach the internal API.');
 
 const server = app.listen(config.port, () => {
   console.log(`API Layer listening at http://localhost:${config.port}`);
