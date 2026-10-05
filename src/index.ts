@@ -4,15 +4,25 @@ import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
 import { streamChannel, StreamEvent } from './events';
+import { config } from './config';
 
 const app = express();
-const PORT = 3000;
 
 app.use(express.json());
 
 // 1. Establish Redis connection and initialize the BullMQ Job Queue
-const redisConnection = new IORedis({ maxRetriesPerRequest: null });
-const llmQueue = new Queue('llm-processing', { connection: redisConnection });
+const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
+const llmQueue = new Queue(config.queueName, {
+  connection: redisConnection,
+  defaultJobOptions: {
+    // Retry transient failures (e.g. Ollama briefly unavailable) with growing delays
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 2000 },
+    // Keep finished jobs long enough to poll their results, then let Redis reclaim the memory
+    removeOnComplete: { age: 24 * 3600, count: 1000 },
+    removeOnFail: { age: 7 * 24 * 3600 }
+  }
+});
 
 // Endpoint to submit an LLM task
 app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
@@ -59,7 +69,8 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
   try {
     await subscriber.subscribe(streamChannel(jobId));
     // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to streams too
-    await llmQueue.add('generate-text', { prompt, stream: true }, { jobId });
+    // No retries: the client has already received the error event and would see tokens replayed
+    await llmQueue.add('generate-text', { prompt, stream: true }, { jobId, attempts: 1 });
   } catch (error) {
     cleanup();
     console.error('Stream queue error:', error);
@@ -106,7 +117,8 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
       status: state,
       data: job.returnvalue?.structuredData ?? job.returnvalue?.text ?? null,
       metrics: job.returnvalue?.metrics || null, // Structural metrics included here
-      failedReason: job.failedReason || null
+      // A retried job keeps the reason from its last failed attempt even after it succeeds
+      failedReason: state === 'failed' ? job.failedReason : null
     });
   } catch (error) {
     console.error('Status fetch error:', error);
@@ -168,7 +180,20 @@ app.post('/api/analyze', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`API Layer listening at http://localhost:${PORT}`);
+const server = app.listen(config.port, () => {
+  console.log(`API Layer listening at http://localhost:${config.port}`);
 });
+
+async function shutdown(signal: string) {
+  console.log(`${signal} received, shutting down API...`);
+  server.close();
+  // Open SSE streams would otherwise keep the server alive indefinitely
+  server.closeAllConnections();
+  await llmQueue.close();
+  await redisConnection.quit();
+  process.exit(0);
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
 

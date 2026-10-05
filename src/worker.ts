@@ -1,16 +1,15 @@
-import { Worker, Job } from 'bullmq';
+import { Worker, Job, UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
-import ollama, { GenerateResponse } from 'ollama';
+import { GenerateResponse } from 'ollama';
 import { z } from 'zod';
 import { AnalysisResponseSchema } from './schema';
 import { searchSimilar } from './db';
 import { streamChannel, StreamEvent } from './events';
+import { config, ollama } from './config';
 
-const MODEL = 'qwen2.5:1.5b';
-
-const redisConnection = new IORedis({ maxRetriesPerRequest: null });
+const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
 // Separate connection for publishing stream events; the worker's connection is used for blocking commands
-const publisher = new IORedis({ maxRetriesPerRequest: null });
+const publisher = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
 
 // JSON Schema handed to Ollama so the grammar layer enforces the exact response structure
 const ANALYSIS_JSON_SCHEMA = z.toJSONSchema(AnalysisResponseSchema);
@@ -58,7 +57,7 @@ ${prompt}`
     : prompt;
 
   const parts = await ollama.generate({
-    model: MODEL,
+    model: config.llmModel,
     prompt: fullPrompt,
     stream: true
   });
@@ -87,7 +86,7 @@ async function analyzeText(job: Job, queueWaitTimeMs: number) {
 
   // Request structured execution
   const response = await ollama.generate({
-    model: MODEL,
+    model: config.llmModel,
     prompt: `You are an AI data extraction engine. Analyze the log message below and return a JSON object that strictly adheres to this structure.
 CRITICAL: You must output ONLY valid JSON. Do not include markdown wraps like \`\`\`json. Do not alter the key names.
 
@@ -113,7 +112,8 @@ Log Message:
   try {
     validatedData = AnalysisResponseSchema.parse(JSON.parse(response.response));
   } catch (error: any) {
-    throw new Error(`Data extraction layout violation: ${error.message}`);
+    // Generation runs at temperature 0, so a retry would produce the same invalid output
+    throw new UnrecoverableError(`Data extraction layout violation: ${error.message}`);
   }
 
   console.log(`[Job ${job.id}] Generation completed: ${metrics.tokensPerSecond} tok/sec.`);
@@ -123,7 +123,7 @@ Log Message:
 }
 
 const worker = new Worker(
-  'llm-processing',
+  config.queueName,
   async (job: Job) => {
     // Calculate Queue Latency (Time spent waiting in Redis)
     const queueWaitTimeMs = Date.now() - job.timestamp;
@@ -136,7 +136,7 @@ const worker = new Worker(
         case 'analyze-text':
           return await analyzeText(job, queueWaitTimeMs);
         default:
-          throw new Error(`Unknown job type: ${job.name}`);
+          throw new UnrecoverableError(`Unknown job type: ${job.name}`);
       }
     } catch (error: any) {
       console.error(`[Job ${job.id}] System execution failed:`, error.message);
@@ -146,3 +146,14 @@ const worker = new Worker(
   },
   { connection: redisConnection, concurrency: 1 }
 );
+
+async function shutdown(signal: string) {
+  console.log(`${signal} received, finishing the active job before exiting...`);
+  await worker.close();
+  await publisher.quit();
+  await redisConnection.quit();
+  process.exit(0);
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));

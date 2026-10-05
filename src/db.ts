@@ -1,10 +1,9 @@
 import * as lancedb from '@lancedb/lancedb';
 import { Field, FixedSizeList, Float32, Schema, Utf8 } from 'apache-arrow';
-import ollama from 'ollama';
+import { config, ollama } from './config';
 
-const DB_DIR = './.lancedb';
 const TABLE_NAME = 'knowledge_base';
-const EMBED_MODEL = 'nomic-embed-text';
+// Vector width of nomic-embed-text; must change together with EMBED_MODEL (and a fresh table)
 const EMBED_DIM = 768;
 
 export interface DocumentRow {
@@ -23,7 +22,7 @@ const SCHEMA = new Schema([
 let tablePromise: Promise<lancedb.Table> | null = null;
 
 async function openTable(): Promise<lancedb.Table> {
-  const db = await lancedb.connect(DB_DIR);
+  const db = await lancedb.connect(config.lancedbDir);
   if (!(await db.tableNames()).includes(TABLE_NAME)) {
     return db.createEmptyTable(TABLE_NAME, SCHEMA);
   }
@@ -45,8 +44,8 @@ export function getVectorTable(): Promise<lancedb.Table> {
 }
 
 export async function embed(text: string): Promise<number[]> {
-  const response = await ollama.embeddings({ model: EMBED_MODEL, prompt: text });
-  return response.embedding;
+  const response = await ollama.embed({ model: config.embedModel, input: text });
+  return response.embeddings[0];
 }
 
 export async function searchSimilar(text: string, limit = 3): Promise<string[]> {

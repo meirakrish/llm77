@@ -75,6 +75,21 @@ The system operates as two decoupled processes. Open two separate terminal insta
 
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
+### 3. Configuration
+Both processes read their settings from environment variables; the defaults match a standard local setup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | API listen port |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection for BullMQ and token streaming |
+| `QUEUE_NAME` | `llm-processing` | BullMQ queue shared by the API and worker |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server |
+| `LLM_MODEL` | `qwen2.5:1.5b` | Generation model |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model (the vector table assumes 768 dimensions) |
+| `LANCEDB_DIR` | `./.lancedb` | LanceDB storage directory |
+
+Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first.
+
 ## 🔌 API Documentation & Verification
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
@@ -135,6 +150,7 @@ curl http://localhost:3000/api/jobs/<jobId>
 ├── package.json          # Dependencies & development scripts
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
+    ├── config.ts         # Environment-driven settings & Ollama client
     ├── db.ts             # LanceDB connection mapping layers
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── index.ts          # Express Server API interface definitions
