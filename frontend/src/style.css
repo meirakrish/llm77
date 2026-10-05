@@ -1,0 +1,103 @@
+:root {
+  --bg: #f6f6f4;
+  --surface: #ffffff;
+  --surface-2: #f0f0ed;
+  --border: #e2e2dd;
+  --text: #1d1d1b;
+  --muted: #6b6b66;
+  --accent: #3a5bd9;
+  --accent-text: #ffffff;
+  --danger: #c0392b;
+  --ok: #2e7d4f;
+  --warn: #b7791f;
+  --radius: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413;
+    --surface: #1d1d1b;
+    --surface-2: #262624;
+    --border: #33332f;
+    --text: #ecece8;
+    --muted: #9a9a93;
+    --accent: #7b93f0;
+    --accent-text: #10131f;
+    --danger: #f0786a;
+    --ok: #6cc28f;
+    --warn: #e8b45a;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 780px; margin: 0 auto; padding: 32px 16px 64px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+
+.composer {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.modes { display: flex; gap: 4px; background: var(--surface-2); padding: 3px; border-radius: 8px; width: fit-content; max-width: 100%; }
+.modes button {
+  border: 0; background: transparent; color: var(--muted);
+  padding: 6px 12px; border-radius: 6px; font: inherit; font-size: 14px; cursor: pointer;
+}
+.modes button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+textarea {
+  width: 100%; min-height: 96px; margin: 10px 0 8px; resize: vertical;
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: inherit;
+}
+textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 13px; }
+.primary {
+  border: 0; background: var(--accent); color: var(--accent-text);
+  padding: 8px 16px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer;
+}
+.primary:disabled { opacity: .5; cursor: default; }
+
+.history-head { display: flex; align-items: baseline; justify-content: space-between; margin: 32px 0 12px; }
+.history-head h2 { font-size: 15px; margin: 0; }
+.link { border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; padding: 2px 4px; }
+.link:hover { color: var(--text); }
+.link.danger:hover { color: var(--danger); }
+.empty { color: var(--muted); text-align: center; padding: 32px 0; font-size: 14px; }
+
+.entry {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.entry-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.entry-head .spacer { flex: 1; }
+.badge {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted);
+}
+.query { margin: 8px 0 10px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer.streaming::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.status { color: var(--muted); font-style: italic; }
+.error { color: var(--danger); }
+.metrics { margin-top: 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); }
+.chip.High { color: var(--danger); border-color: currentColor; }
+.chip.Medium { color: var(--warn); border-color: currentColor; }
+.chip.Low { color: var(--ok); border-color: currentColor; }
+.actions { margin: 6px 0 0; padding-left: 20px; }
