@@ -2,11 +2,13 @@
   import { onMount, tick } from 'svelte';
   import HistoryEntry from './lib/HistoryEntry.svelte';
   import ModelInfo from './lib/ModelInfo.svelte';
+  import ModelPicker from './lib/ModelPicker.svelte';
   import { history } from './lib/history.svelte';
   import { MODES, type Entry, type Mode } from './lib/types';
 
   let mode = $state<Mode>('ask');
   let input = $state('');
+  let model = $state('');
   let textarea: HTMLTextAreaElement;
 
   onMount(() => history.resumeInterrupted());
@@ -15,7 +17,7 @@
     event.preventDefault();
     const text = input.trim();
     if (!text) return;
-    history.add(mode, text);
+    history.add(mode, text, model || undefined);
     input = '';
   }
 
@@ -34,6 +36,8 @@
   async function reuse(entry: Entry) {
     mode = entry.mode;
     input = entry.input;
+    // The picker drops it again if that model is no longer offered
+    if (entry.mode !== 'seed') model = entry.requestedModel ?? '';
     await tick();
     textarea.focus();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -57,6 +61,9 @@
         </button>
       {/each}
     </div>
+    {#if mode !== 'seed'}
+      <ModelPicker bind:value={model} />
+    {/if}
     <textarea
       id="input"
       required

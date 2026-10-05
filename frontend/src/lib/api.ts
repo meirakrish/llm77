@@ -1,4 +1,4 @@
-import type { Analysis, ApiInfo, Metrics } from './types';
+import type { Analysis, ApiInfo, Metrics, ModelsResponse } from './types';
 
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -42,8 +42,8 @@ function parseEvent(raw: string): StreamEvent {
 }
 
 // Queue a generation job and yield its Server-Sent Events as they arrive
-export async function* streamAsk(prompt: string): AsyncGenerator<StreamEvent> {
-  const res = await postJson('/api/stream', { prompt });
+export async function* streamAsk(prompt: string, model?: string): AsyncGenerator<StreamEvent> {
+  const res = await postJson('/api/stream', { prompt, model });
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
 
@@ -61,8 +61,8 @@ export async function* streamAsk(prompt: string): AsyncGenerator<StreamEvent> {
   }
 }
 
-export async function queueAnalysis(text: string): Promise<string> {
-  const res = await postJson('/api/analyze', { text });
+export async function queueAnalysis(text: string, model?: string): Promise<string> {
+  const res = await postJson('/api/analyze', { text, model });
   return (await res.json()).jobId;
 }
 
@@ -74,6 +74,12 @@ export async function seed(text: string): Promise<void> {
 export async function getJob(jobId: string): Promise<JobStatus | null> {
   const res = await fetch(`${API_URL}/api/jobs/${encodeURIComponent(jobId)}`);
   if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Request failed (${res.status})`);
+  return res.json();
+}
+
+export async function getModels(): Promise<ModelsResponse> {
+  const res = await fetch(`${API_URL}/api/models`);
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   return res.json();
 }

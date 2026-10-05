@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatCost } from './format';
   import { MODES, type Entry } from './types';
 
   let { entry, onreuse, ondelete }: { entry: Entry; onreuse: () => void; ondelete: () => void } = $props();
@@ -8,6 +9,9 @@
   <div class="entry-head">
     <span class="badge">{MODES[entry.mode].badge}</span>
     <time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>
+    {#if entry.model ?? entry.requestedModel}
+      <span class="model">{entry.model ?? entry.requestedModel}</span>
+    {/if}
     <span class="spacer"></span>
     <button class="link" type="button" onclick={onreuse}>Reuse</button>
     <button class="link danger" type="button" onclick={ondelete}>Delete</button>
@@ -50,7 +54,7 @@
   {#if entry.status === 'done' && entry.metrics}
     {@const m = entry.metrics}
     <div class="metrics">
-      {entry.model ? `${entry.model} · ` : ''}{m.tokensPerSecond} tok/s · {m.totalTokens} tokens · {(m.executionTimeMs / 1000).toFixed(1)}s · queued {m.queueWaitTimeMs}ms
+      {m.tokensPerSecond} tok/s · {m.totalTokens} tokens · {(m.executionTimeMs / 1000).toFixed(1)}s · queued {m.queueWaitTimeMs}ms{m.costUsd !== undefined ? ` · ${formatCost(m.costUsd)}` : ''}
     </div>
   {/if}
 </article>
@@ -65,6 +69,7 @@
   }
   .entry-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
   .spacer { flex: 1; }
+  .model { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
   .badge {
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
     padding: 2px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted);

@@ -8,6 +8,8 @@ export interface Metrics {
   completionTokens: number;
   totalTokens: number;
   tokensPerSecond: number;
+  // Only for Claude models, priced from the token counts
+  costUsd?: number;
 }
 
 export interface Analysis {
@@ -27,6 +29,9 @@ export interface Entry {
   text: string;
   jobId?: string;
   data?: Analysis;
+  // The model the user picked (unset means the worker's default local model)
+  requestedModel?: string;
+  // The model that actually produced the result
   model?: string | null;
   metrics?: Metrics | null;
   error?: string;
@@ -40,10 +45,26 @@ export interface ModelInfo {
   digest?: string | null;
 }
 
+export interface ModelOption {
+  id: string;
+  name: string;
+  provider: 'ollama' | 'claude';
+  // USD per million tokens (Claude only)
+  inputPrice?: number;
+  outputPrice?: number;
+}
+
+export interface ModelsResponse {
+  workerOnline: boolean;
+  defaultModel: string | null;
+  models: ModelOption[];
+}
+
 export interface ApiInfo {
   workerOnline: boolean;
   llmModel?: ModelInfo;
   embedModel?: ModelInfo;
+  claude?: { available: boolean; models: ModelOption[]; error?: string };
   ollamaVersion?: string | null;
   error?: string;
 }

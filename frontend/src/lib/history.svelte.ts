@@ -26,11 +26,13 @@ class History {
     return this.entries.some((e) => e.id === entry.id);
   }
 
-  add(mode: Mode, input: string) {
+  add(mode: Mode, input: string, requestedModel?: string) {
     this.entries.unshift({
       id: crypto.randomUUID(),
       mode,
       input,
+      // Knowledge is embedded locally, so no model choice applies
+      ...(requestedModel && mode !== 'seed' ? { requestedModel } : {}),
       createdAt: new Date().toISOString(),
       status: 'pending',
       text: ''
@@ -79,7 +81,7 @@ class History {
   }
 
   private async runAsk(entry: Entry) {
-    for await (const event of api.streamAsk(entry.input)) {
+    for await (const event of api.streamAsk(entry.input, entry.requestedModel)) {
       if (event.type === 'queued') {
         this.update(entry, { jobId: event.jobId, status: 'streaming' });
       } else if (event.type === 'token') {
@@ -97,7 +99,7 @@ class History {
   }
 
   private async runAnalyze(entry: Entry) {
-    this.update(entry, { jobId: await api.queueAnalysis(entry.input) });
+    this.update(entry, { jobId: await api.queueAnalysis(entry.input, entry.requestedModel) });
     await this.poll(entry);
   }
 

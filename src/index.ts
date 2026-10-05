@@ -1,10 +1,10 @@
 import express, { Request, Response } from 'express';
-import { Queue } from 'bullmq';
+import { Queue, DefaultJobOptions } from 'bullmq';
 import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
 import cors from 'cors';
-import { streamChannel, StreamEvent, workerInfoKey } from './events';
+import { streamChannel, StreamEvent, workerInfoKey, WorkerInfo, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
 import { config } from './config';
 
 const app = express();
@@ -15,21 +15,49 @@ app.use(express.json());
 
 // 1. Establish Redis connection and initialize the BullMQ Job Queue
 const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-const llmQueue = new Queue(config.queueName, {
-  connection: redisConnection,
-  defaultJobOptions: {
-    // Retry transient failures (e.g. Ollama briefly unavailable) with growing delays
-    attempts: 3,
-    backoff: { type: 'exponential', delay: 2000 },
-    // Keep finished jobs long enough to poll their results, then let Redis reclaim the memory
-    removeOnComplete: { age: 24 * 3600, count: 1000 },
-    removeOnFail: { age: 7 * 24 * 3600 }
+const defaultJobOptions: DefaultJobOptions = {
+  // Retry transient failures (e.g. Ollama briefly unavailable) with growing delays
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 2000 },
+  // Keep finished jobs long enough to poll their results, then let Redis reclaim the memory
+  removeOnComplete: { age: 24 * 3600, count: 1000 },
+  removeOnFail: { age: 7 * 24 * 3600 }
+};
+const llmQueue = new Queue(config.queueName, { connection: redisConnection, defaultJobOptions });
+// Claude jobs get their own queue so they don't wait behind (or block) local GPU jobs
+const cloudQueue = new Queue(config.cloudQueueName, { connection: redisConnection, defaultJobOptions });
+
+async function readWorkerInfo(): Promise<WorkerInfo | null> {
+  const raw = await redisConnection.get(workerInfoKey(config.queueName));
+  return raw ? JSON.parse(raw) : null;
+}
+
+type Target = { model?: string; queue: Queue; jobId?: string } | { error: string };
+
+// Validate the requested model and pick its queue. Claude models must be on the allowlist and accessible
+// with the worker's credentials, so a browser can't run up charges on arbitrary models.
+async function resolveTarget(model: unknown): Promise<Target> {
+  if (model === undefined || model === null || model === '') return { queue: llmQueue };
+  if (typeof model !== 'string') return { error: 'model must be a string.' };
+
+  // With no worker online the job waits in the queue, and the worker reports problems when it runs it
+  const info = await readWorkerInfo();
+  if (isClaudeModel(model)) {
+    if (!config.claudeModels.includes(model)) return { error: `Model ${model} is not enabled.` };
+    if (info?.claude && !info.claude.models.some((m) => m.id === model)) {
+      return { error: `Model ${model} is not available: ${info.claude.error ?? "not accessible with the worker's credentials"}` };
+    }
+    return { model, queue: cloudQueue, jobId: CLOUD_JOB_PREFIX + crypto.randomUUID() };
   }
-});
+  if (info?.localModels && !info.localModels.includes(model)) return { error: `Model ${model} is not installed on the worker.` };
+  return { model, queue: llmQueue };
+}
+
+const queueForJob = (jobId: string) => (jobId.startsWith(CLOUD_JOB_PREFIX) ? cloudQueue : llmQueue);
 
 // Endpoint to submit an LLM task
 app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
-  const { prompt } = req.body;
+  const { prompt, model } = req.body;
 
   if (!prompt || typeof prompt !== 'string') {
     res.status(400).json({ error: 'A text prompt is required.' });
@@ -37,9 +65,15 @@ app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    // 2. Add the prompt task to the queue. 
-    // BullMQ assigns a unique Job ID automatically.
-    const job = await llmQueue.add('generate-text', { prompt });
+    const target = await resolveTarget(model);
+    if ('error' in target) {
+      res.status(400).json({ error: target.error });
+      return;
+    }
+
+    // 2. Add the prompt task to the model's queue.
+    // BullMQ assigns local jobs a unique ID automatically; cloud jobs carry a prefixed one.
+    const job = await target.queue.add('generate-text', { prompt, model: target.model }, { jobId: target.jobId });
 
     // 3. Immediately respond with a 202 Accepted status and the identifier
     res.status(202).json({
@@ -55,15 +89,28 @@ app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
 
 // Endpoint to queue a generation task and stream its tokens back via Server-Sent Events
 app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
-  const { prompt } = req.body;
+  const { prompt, model } = req.body;
 
   if (!prompt || typeof prompt !== 'string') {
     res.status(400).json({ error: 'A text prompt is required.' });
     return;
   }
 
+  let target: Target;
+  try {
+    target = await resolveTarget(model);
+  } catch (error) {
+    console.error('Stream model lookup error:', error);
+    res.status(500).json({ error: 'Failed to queue the stream request.' });
+    return;
+  }
+  if ('error' in target) {
+    res.status(400).json({ error: target.error });
+    return;
+  }
+
   // Subscribe before queueing so no tokens are published before we are listening
-  const jobId = crypto.randomUUID();
+  const jobId = target.jobId ?? crypto.randomUUID();
   const subscriber = redisConnection.duplicate();
   const cleanup = () => {
     subscriber.quit().catch(() => {});
@@ -71,9 +118,9 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
 
   try {
     await subscriber.subscribe(streamChannel(jobId));
-    // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to streams too
+    // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to local streams too
     // No retries: the client has already received the error event and would see tokens replayed
-    await llmQueue.add('generate-text', { prompt, stream: true }, { jobId, attempts: 1 });
+    await target.queue.add('generate-text', { prompt, model: target.model, stream: true }, { jobId, attempts: 1 });
   } catch (error) {
     cleanup();
     console.error('Stream queue error:', error);
@@ -106,11 +153,35 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
 // Endpoint describing the models the worker runs; workerOnline is false if no worker has reported recently
 app.get('/api/info', async (_req: Request, res: Response): Promise<void> => {
   try {
-    const raw = await redisConnection.get(workerInfoKey(config.queueName));
-    res.json(raw ? { workerOnline: true, ...JSON.parse(raw) } : { workerOnline: false });
+    const info = await readWorkerInfo();
+    res.json(info ? { workerOnline: true, ...info } : { workerOnline: false });
   } catch (error) {
     console.error('Info fetch error:', error);
     res.status(500).json({ error: 'Failed to look up worker info.' });
+  }
+});
+
+// Endpoint listing the models a prompt can run on: the worker's local models plus enabled, accessible Claude models
+app.get('/api/models', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const info = await readWorkerInfo();
+    if (!info) {
+      res.json({ workerOnline: false, defaultModel: null, models: [] });
+      return;
+    }
+    res.json({
+      workerOnline: true,
+      defaultModel: info.llmModel.name,
+      models: [
+        ...(info.localModels ?? []).map((id) => ({ id, name: id, provider: 'ollama' })),
+        ...(info.claude?.models ?? [])
+          .filter((m) => config.claudeModels.includes(m.id))
+          .map((m) => ({ ...m, provider: 'claude' }))
+      ]
+    });
+  } catch (error) {
+    console.error('Models fetch error:', error);
+    res.status(500).json({ error: 'Failed to look up models.' });
   }
 });
 
@@ -118,7 +189,7 @@ app.get('/api/info', async (_req: Request, res: Response): Promise<void> => {
 app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params;
   try {
-    const job = await llmQueue.getJob(id);
+    const job = await queueForJob(id).getJob(id);
     if (!job) {
       res.status(404).json({ error: 'Job not found.' });
       return;
@@ -171,7 +242,7 @@ app.post('/api/seed', async (req: Request, res: Response): Promise<void> => {
 });
 
 app.post('/api/analyze', async (req: Request, res: Response): Promise<void> => {
-  const { text } = req.body;
+  const { text, model } = req.body;
 
   if (!text || typeof text !== 'string') {
     res.status(400).json({ error: 'Text content to analyze is required.' });
@@ -179,11 +250,14 @@ app.post('/api/analyze', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
+    const target = await resolveTarget(model);
+    if ('error' in target) {
+      res.status(400).json({ error: target.error });
+      return;
+    }
+
     // Flag this task type specifically so the worker knows to enforce a schema layout
-    const job = await llmQueue.add('analyze-text', { 
-      text, 
-      structured: true 
-    });
+    const job = await target.queue.add('analyze-text', { text, model: target.model, structured: true }, { jobId: target.jobId });
 
     res.status(202).json({
       message: 'Analysis job queued successfully.',
@@ -204,7 +278,7 @@ async function shutdown(signal: string) {
   server.close();
   // Open SSE streams would otherwise keep the server alive indefinitely
   server.closeAllConnections();
-  await llmQueue.close();
+  await Promise.all([llmQueue.close(), cloudQueue.close()]);
   await redisConnection.quit();
   process.exit(0);
 }
