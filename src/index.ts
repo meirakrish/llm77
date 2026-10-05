@@ -1,10 +1,8 @@
 import express, { Request, Response } from 'express';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
-import { getVectorTable } from './db';
-import ollama from 'ollama';
+import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
-import { AnalysisResponseSchema } from './schema';
 
 const app = express();
 const PORT = 3000;
@@ -56,7 +54,7 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
     res.json({
       jobId: job.id,
       status: state,
-      data: job.returnvalue?.structuredData || null,
+      data: job.returnvalue?.structuredData ?? job.returnvalue?.text ?? null,
       metrics: job.returnvalue?.metrics || null, // Structural metrics included here
       failedReason: job.failedReason || null
     });
@@ -77,18 +75,15 @@ app.post('/api/seed', async (req: Request, res: Response): Promise<void> => {
 
   try {
     // 1. Generate embedding vector using Ollama
-    const embeddingResponse = await ollama.embeddings({
-      model: 'nomic-embed-text',
-      prompt: text,
-    });
+    const vector = await embed(text);
 
     const table = await getVectorTable();
-    
+
     // 2. Insert text along with its corresponding vector array
     await table.add([{
       id: crypto.randomUUID(),
       text: text,
-      vector: embeddingResponse.embedding
+      vector
     }]);
 
     res.status(201).json({ message: 'Document successfully vectorized and stored in LanceDB.' });
