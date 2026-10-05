@@ -56,10 +56,11 @@ ollama pull nomic-embed-text
 ## 🛠️ Getting Started
 
 ### 1. Installation
-Clone the repository, navigate to the project directory, and install dependencies bypassing conflicting native peer dependencies:
+Clone the repository, navigate to the project directory, and install dependencies:
 ```bash
-npm install --legacy-peer-deps
+npm install
 ```
+`apache-arrow` is pinned to 18.1.0, the newest version `@lancedb/lancedb` supports; don't upgrade it independently of LanceDB.
 
 ### 2. Running the Infrastructure
 The system operates as two decoupled processes. Open two separate terminal instances to execute the system:
