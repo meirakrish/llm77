@@ -70,16 +70,35 @@ The system operates as two decoupled processes. Open two separate terminal insta
     ```
 *   **Terminal 2 (Background Queue Worker):**
     ```bash
-    npx ts-node src/worker.ts
+    npm run dev:worker
     ```
+
+For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
+
+### 3. Configuration
+Both processes read their settings from environment variables; the defaults match a standard local setup.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | API listen port |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection for BullMQ and token streaming |
+| `QUEUE_NAME` | `llm-processing` | BullMQ queue shared by the API and worker |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server |
+| `LLM_MODEL` | `qwen2.5:1.5b` | Generation model |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model (the vector table assumes 768 dimensions) |
+| `LANCEDB_DIR` | `./.lancedb` | LanceDB storage directory |
+
+Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first.
 
 ## 🔌 API Documentation & Verification
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
-Directly streams conversational responses back to the client using Server-Sent Events (SSE).
+Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`) or `error` (`message`).
 ```bash
-curl -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
+curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
 ```
+
+To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4).
 
 ### 2. Seed RAG Knowledge Base
 Injects domain-specific background context into the local LanceDB vector index.
@@ -131,7 +150,9 @@ curl http://localhost:3000/api/jobs/<jobId>
 ├── package.json          # Dependencies & development scripts
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
+    ├── config.ts         # Environment-driven settings & Ollama client
     ├── db.ts             # LanceDB connection mapping layers
+    ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── index.ts          # Express Server API interface definitions
     ├── schema.ts         # Zod data structures & type inferences
     └── worker.ts         # BullMQ queue execution worker routine
