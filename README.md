@@ -109,10 +109,23 @@ The API and worker read their settings from environment variables; the defaults 
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model (the vector table assumes 768 dimensions) |
 | `LANCEDB_DIR` | `./.lancedb` | LanceDB storage directory |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
+| `ANTHROPIC_API_KEY` | *(none)* | Worker only: enables Claude models (an `ant auth login` profile also works) |
+| `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Claude models users may pick; set the same value for the API and worker |
+| `CLOUD_CONCURRENCY` | `4` | How many Claude jobs the worker runs at once |
+
+### 5. Claude Models (optional)
+Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **worker's** environment and restart it. The model picker in the frontend then offers the Claude models from `CLAUDE_MODELS` that the key can access; the info panel shows why if none are available.
+
+* **Data leaves your machine:** a Claude prompt, including any matching knowledge-base context, is sent to Anthropic's API. Local models keep everything local.
+* **Billed per token:** prices per million input / output tokens are shown in the picker (Claude Opus 5.5 $4 / $20, Claude Haiku 4.5 $1 / $5), and each Claude result shows its cost.
+* **Ollama is still required:** Claude has no embeddings API, so knowledge-base search keeps using `EMBED_MODEL`.
+* Claude jobs use their own queue (`<QUEUE_NAME>-cloud`) and run in parallel, so they never wait behind local GPU jobs. Claude Opus 5.5 runs at low effort and with server-side refusal fallbacks; a request Claude declines fails with a clear message.
 
 Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first.
 
 ## 🔌 API Documentation & Verification
+
+`POST /api/stream`, `/api/jobs` and `/api/analyze` accept an optional `"model"` (one listed by `GET /api/models`); without it, the worker's `LLM_MODEL` is used.
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
 Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`) or `error` (`message`).
@@ -167,7 +180,7 @@ curl http://localhost:3000/api/jobs/<jobId>
 ```
 
 ### 5. Worker & Model Info
-Reports the models the running worker actually uses (name, family, size, quantization, digest) and the Ollama version. The worker refreshes this every 30 seconds; `workerOnline` becomes `false` within a minute if no worker is running. The frontend shows it under the title and tags each result with the model that produced it.
+`GET /api/models` lists the models a prompt can run on (local models plus available Claude models, with prices). `GET /api/info` reports the models the running worker actually uses (name, family, size, quantization, digest) and the Ollama version. The worker refreshes this every 30 seconds; `workerOnline` becomes `false` within a minute if no worker is running. The frontend shows it under the title and tags each result with the model that produced it.
 ```bash
 curl http://localhost:3000/api/info
 ```
@@ -186,6 +199,7 @@ curl http://localhost:3000/api/info
     ├── db.ts             # LanceDB connection mapping layers
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── index.ts          # Express Server API interface definitions
+    ├── providers         # Ollama and Claude implementations of text generation & analysis
     ├── schema.ts         # Zod data structures & type inferences
     └── worker.ts         # BullMQ queue execution worker routine
 ```

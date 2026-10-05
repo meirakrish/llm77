@@ -1,18 +1,16 @@
 import { Worker, Job, UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
-import { GenerateResponse } from 'ollama';
-import { z } from 'zod';
-import { AnalysisResponseSchema } from './schema';
 import { searchSimilar } from './db';
-import { streamChannel, StreamEvent, workerInfoKey, ModelInfo, WorkerInfo } from './events';
+import { streamChannel, StreamEvent, workerInfoKey, ModelInfo, WorkerInfo, ClaudeInfo, isClaudeModel } from './events';
 import { config, ollama } from './config';
+import { ollamaProvider } from './providers/ollama';
+import { claudeProvider, checkClaudeModels } from './providers/claude';
+import { Provider, Usage } from './providers/types';
 
 const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-// Separate connection for publishing stream events; the worker's connection is used for blocking commands
+const cloudConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
+// Separate connection for publishing stream events; the workers' connections are used for blocking commands
 const publisher = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-
-// JSON Schema handed to Ollama so the grammar layer enforces the exact response structure
-const ANALYSIS_JSON_SCHEMA = z.toJSONSchema(AnalysisResponseSchema);
 
 function publish(job: Job, event: StreamEvent) {
   return publisher.publish(streamChannel(job.id!), JSON.stringify(event));
@@ -22,6 +20,8 @@ console.log('Metrics-Enabled Worker initialized and listening...');
 
 // Advertise the worker's models for the UI; refreshed on a timer and expiring if the worker dies
 const WORKER_INFO_TTL_SEC = 60;
+// Re-check Claude access this often once it works (a failing check is retried on every refresh)
+const CLAUDE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
 async function describeModel(name: string, installed: { name: string; digest: string }[]): Promise<ModelInfo> {
   const { details } = await ollama.show({ model: name });
@@ -33,6 +33,22 @@ async function describeModel(name: string, installed: { name: string; digest: st
     quantization: details.quantization_level,
     digest: digest ? digest.slice(0, 12) : null
   };
+}
+
+// Installed models that can generate text; embedding-only models can't answer prompts
+async function listLocalModels(installed: { name: string }[]): Promise<string[]> {
+  const shown = await Promise.all(installed.map((m) => ollama.show({ model: m.name })));
+  return installed.filter((_, i) => shown[i].capabilities?.includes('completion')).map((m) => m.name);
+}
+
+let claudeInfo: ClaudeInfo = { available: false, models: [] };
+let claudeCheckedAt = 0;
+
+async function refreshClaudeInfo() {
+  if (claudeInfo.available && Date.now() - claudeCheckedAt < CLAUDE_CHECK_INTERVAL_MS) return claudeInfo;
+  claudeInfo = await checkClaudeModels(config.claudeModels);
+  claudeCheckedAt = Date.now();
+  return claudeInfo;
 }
 
 async function publishWorkerInfo() {
@@ -48,16 +64,19 @@ async function publishWorkerInfo() {
   };
 
   const installed = await attempt(async () => (await ollama.list()).models, []);
-  const [llmModel, embedModel, ollamaVersion] = await Promise.all([
+  const [llmModel, embedModel, localModels, ollamaVersion, claude] = await Promise.all([
     attempt(() => describeModel(config.llmModel, installed), { name: config.llmModel }),
     attempt(() => describeModel(config.embedModel, installed), { name: config.embedModel }),
+    attempt(() => listLocalModels(installed), []),
     attempt(async () => {
       const res = await fetch(`${config.ollamaHost}/api/version`);
       return ((await res.json()) as { version: string }).version;
-    }, null)
+    }, null),
+    // Claude problems are reported on their own so they don't flag Ollama as unhealthy
+    refreshClaudeInfo().catch((error): ClaudeInfo => ({ available: false, models: [], error: error.message }))
   ]);
 
-  const info: WorkerInfo = { llmModel, embedModel, ollamaVersion, updatedAt: new Date().toISOString() };
+  const info: WorkerInfo = { llmModel, embedModel, localModels, claude, ollamaVersion, updatedAt: new Date().toISOString() };
   if (errors.size) info.error = [...errors].join('; ');
   await publisher.set(workerInfoKey(config.queueName), JSON.stringify(info), 'EX', WORKER_INFO_TTL_SEC);
 }
@@ -66,27 +85,21 @@ const reportInfo = () => publishWorkerInfo().catch((error) => console.error('Fai
 reportInfo();
 const infoTimer = setInterval(reportInfo, (WORKER_INFO_TTL_SEC / 2) * 1000);
 
-// Extract token usage and throughput statistics from an Ollama response
-function buildMetrics(response: GenerateResponse, queueWaitTimeMs: number, executionTimeMs: number) {
-  const promptTokens = response.prompt_eval_count || 0;
-  const completionTokens = response.eval_count || 0;
-  const totalTokens = promptTokens + completionTokens;
+const providerFor = (model: string): Provider => (isClaudeModel(model) ? claudeProvider : ollamaProvider);
 
-  // Calculate tokens per second (eval_duration is in nanoseconds from Ollama)
-  const generationDurationSec = (response.eval_duration || 1) / 1_000_000_000;
-  const tokensPerSecond = parseFloat((completionTokens / generationDurationSec).toFixed(2));
-
+function buildMetrics(usage: Usage, queueWaitTimeMs: number, executionTimeMs: number): Record<string, number> {
   return {
     queueWaitTimeMs,
     executionTimeMs,
-    promptTokens,
-    completionTokens,
-    totalTokens,
-    tokensPerSecond
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    totalTokens: usage.promptTokens + usage.completionTokens,
+    tokensPerSecond: usage.tokensPerSecond,
+    ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {})
   };
 }
 
-async function generateText(job: Job, queueWaitTimeMs: number) {
+async function generateText(job: Job, model: string, queueWaitTimeMs: number) {
   const { prompt, stream } = job.data;
   const startTime = Date.now();
 
@@ -102,104 +115,65 @@ Question:
 ${prompt}`
     : prompt;
 
-  const parts = await ollama.generate({
-    model: config.llmModel,
-    prompt: fullPrompt,
-    stream: true
+  // Forward each token to streaming clients as it is generated
+  const result = await providerFor(model).streamText(model, fullPrompt, async (token) => {
+    if (stream) await publish(job, { type: 'token', token });
   });
 
-  // Accumulate the full text while forwarding each token to streaming clients
-  let text = '';
-  let finalPart: GenerateResponse | undefined;
-  for await (const part of parts) {
-    text += part.response;
-    if (stream && part.response) await publish(job, { type: 'token', token: part.response });
-    if (part.done) finalPart = part;
-  }
+  const metrics = buildMetrics(result.usage, queueWaitTimeMs, Date.now() - startTime);
+  console.log(`[Job ${job.id}] ${result.model} completed with ${contextDocs.length} context docs: ${metrics.tokensPerSecond} tok/sec.`);
 
-  // The final chunk carries Ollama's token and timing statistics
-  const metrics = buildMetrics(finalPart!, queueWaitTimeMs, Date.now() - startTime);
-  console.log(`[Job ${job.id}] Generation completed with ${contextDocs.length} context docs: ${metrics.tokensPerSecond} tok/sec.`);
+  if (stream) await publish(job, { type: 'done', text: result.text, model: result.model, metrics });
 
-  if (stream) await publish(job, { type: 'done', text, model: config.llmModel, metrics });
-
-  return { text, contextDocs, model: config.llmModel, metrics };
+  return { text: result.text, contextDocs, model: result.model, metrics };
 }
 
-async function analyzeText(job: Job, queueWaitTimeMs: number) {
-  const { text } = job.data;
+async function analyzeText(job: Job, model: string, queueWaitTimeMs: number) {
   const startTime = Date.now();
+  const result = await providerFor(model).analyze(model, job.data.text);
+  const metrics = buildMetrics(result.usage, queueWaitTimeMs, Date.now() - startTime);
 
-  // Request structured execution
-  const response = await ollama.generate({
-    model: config.llmModel,
-    prompt: `You are an AI data extraction engine. Analyze the log message below and return a JSON object that strictly adheres to this structure.
-CRITICAL: You must output ONLY valid JSON. Do not include markdown wraps like \`\`\`json. Do not alter the key names.
-
-Expected JSON Structure:
-{
-  "summary": "1-sentence summary string",
-  "category": "Support" | "Billing" | "Feature Request" | "Spam",
-  "urgency": "Low" | "Medium" | "High",
-  "actionItems": ["action item 1", "action item 2"]
-}
-
-Log Message:
-"${text}"`,
-    format: ANALYSIS_JSON_SCHEMA,
-    stream: false,
-    options: { temperature: 0.0 }
-  });
-
-  const metrics = buildMetrics(response, queueWaitTimeMs, Date.now() - startTime);
-
-  // Parse and validate the output payload; only these failures are schema violations
-  let validatedData;
-  try {
-    validatedData = AnalysisResponseSchema.parse(JSON.parse(response.response));
-  } catch (error: any) {
-    // Generation runs at temperature 0, so a retry would produce the same invalid output
-    throw new UnrecoverableError(`Data extraction layout violation: ${error.message}`);
-  }
-
-  console.log(`[Job ${job.id}] Generation completed: ${metrics.tokensPerSecond} tok/sec.`);
+  console.log(`[Job ${job.id}] ${result.model} analysis completed: ${metrics.tokensPerSecond} tok/sec.`);
 
   // Return both payload data and metadata metrics
-  return { structuredData: validatedData, model: config.llmModel, metrics };
+  return { structuredData: result.data, model: result.model, metrics };
 }
 
-const worker = new Worker(
-  config.queueName,
-  async (job: Job) => {
-    // Calculate Queue Latency (Time spent waiting in Redis)
-    const queueWaitTimeMs = Date.now() - job.timestamp;
-    console.log(`[Job ${job.id}] Picked up after waiting ${queueWaitTimeMs}ms in queue.`);
+async function processJob(job: Job) {
+  // Calculate Queue Latency (Time spent waiting in Redis)
+  const queueWaitTimeMs = Date.now() - job.timestamp;
+  const model: string = job.data.model ?? config.llmModel;
+  console.log(`[Job ${job.id}] Picked up after waiting ${queueWaitTimeMs}ms in queue (${model}).`);
 
-    try {
-      switch (job.name) {
-        case 'generate-text':
-          return await generateText(job, queueWaitTimeMs);
-        case 'analyze-text':
-          return await analyzeText(job, queueWaitTimeMs);
-        default:
-          throw new UnrecoverableError(`Unknown job type: ${job.name}`);
-      }
-    } catch (error: any) {
-      console.error(`[Job ${job.id}] System execution failed:`, error.message);
-      if (job.data.stream) await publish(job, { type: 'error', message: error.message });
-      throw error;
+  try {
+    switch (job.name) {
+      case 'generate-text':
+        return await generateText(job, model, queueWaitTimeMs);
+      case 'analyze-text':
+        return await analyzeText(job, model, queueWaitTimeMs);
+      default:
+        throw new UnrecoverableError(`Unknown job type: ${job.name}`);
     }
-  },
-  { connection: redisConnection, concurrency: 1 }
-);
+  } catch (error: any) {
+    console.error(`[Job ${job.id}] System execution failed:`, error.message);
+    if (job.data.stream) await publish(job, { type: 'error', message: error.message });
+    throw error;
+  }
+}
+
+// Local models share one GPU, so run one job at a time; Claude jobs run in parallel on their own queue
+const localWorker = new Worker(config.queueName, processJob, { connection: redisConnection, concurrency: 1 });
+const cloudWorker = new Worker(config.cloudQueueName, processJob, {
+  connection: cloudConnection,
+  concurrency: config.cloudConcurrency
+});
 
 async function shutdown(signal: string) {
-  console.log(`${signal} received, finishing the active job before exiting...`);
+  console.log(`${signal} received, finishing active jobs before exiting...`);
   clearInterval(infoTimer);
-  await worker.close();
+  await Promise.all([localWorker.close(), cloudWorker.close()]);
   await publisher.del(workerInfoKey(config.queueName));
-  await publisher.quit();
-  await redisConnection.quit();
+  await Promise.all([publisher.quit(), redisConnection.quit(), cloudConnection.quit()]);
   process.exit(0);
 }
 
