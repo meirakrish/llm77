@@ -8,7 +8,7 @@
   const STORE_KEY = 'llm77.model';
   let models = $state<ModelOption[]>([]);
   let defaultModel = $state<string | null>(null);
-  let status = $state<'loading' | 'ready' | 'offline' | 'unreachable'>('loading');
+  let status = $state<'loading' | 'ready' | 'unreachable'>('loading');
 
   const local = $derived(models.filter((m) => m.provider === 'ollama'));
   const claude = $derived(models.filter((m) => m.provider === 'claude'));
@@ -23,9 +23,11 @@
       const res = await getModels();
       models = res.models;
       defaultModel = res.defaultModel;
-      status = res.workerOnline ? 'ready' : 'offline';
-      // Drop a saved choice that is no longer offered (model removed, Claude credentials gone)
-      if (res.workerOnline && value && !models.some((m) => m.id === value)) value = '';
+      // The backend lists models even while the worker is down; queued jobs wait for it
+      status = 'ready';
+      // Drop a saved choice that is no longer offered (model removed, Claude credentials gone);
+      // an empty list means the backend couldn't reach Ollama, so keep the choice until it can
+      if (value && models.length && !models.some((m) => m.id === value)) value = '';
     } catch {
       status = 'unreachable';
     }
@@ -64,7 +66,7 @@
     {:else if status === 'loading'}
       <option value={value}>Loading models…</option>
     {:else}
-      <option value={value}>{status === 'offline' ? 'Worker offline' : 'Backend unreachable'}</option>
+      <option value={value}>Backend unreachable</option>
     {/if}
   </select>
 </label>

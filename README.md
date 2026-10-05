@@ -10,26 +10,29 @@ A production-grade, asynchronous backend architecture built with **Node.js, Type
   REST / │              │ Server-Sent Events
   Stream │              │ (Real-time Tokens)
          ▼              │
-   ┌────────────────────┴────────────────────┐
-   │        Node.js / TypeScript API         │
-   │            (Express Engine)             │
-   └─────────┬──────────────────────▲────────┘
-             │                      │
-       Publish Job             Poll / Stream
-             ▼                      │
-   ┌────────────────────────────────┴────────┐
-   │            Redis (BullMQ)               │
-   │       (Task Queue & Event Bus)          │
-   └─────────┬───────────────────────────────┘
-             │
-       Process Task (Concurrency: 1)
-             ▼
-   ┌─────────────────────────────────────────┐
+   ┌────────────────────┴────────────────────┐      ┌──────────────────────────┐
+   │        Node.js / TypeScript API         ├─────►│ Ollama (generation and   │
+   │   (Express; the only process that       │      │ embeddings)              │
+   │    talks to models & the vector store)  ├─────►│ Anthropic API (Claude)   │
+   │                                         ├─────►│ LanceDB (in-process)     │
+   └──┬──────────────────────────▲───────▲───┘      └──────────────────────────┘
+      │                          │       │
+  Publish Job              Poll / Stream │ /internal API (token-protected):
+      ▼                          │       │ generate, analyze, search, heartbeat
+   ┌─────────────────────────────┴────┐  │
+   │          Redis (BullMQ)          │  │
+   │    (Task Queue & Event Bus)      │  │
+   └──┬───────────────────────────────┘  │
+      │ Process Task                     │
+      ▼                                  │
+   ┌─────────────────────────────────────┴───┐
    │         Asynchronous Worker             │
-   │  • Ollama (Qwen 2.5 1.5B / Llama 3.2)   │
-   │  • Vector Store (LanceDB In-Process)    │
+   │  Orchestrates jobs: local queue at      │
+   │  concurrency 1, Claude queue in parallel│
    └─────────────────────────────────────────┘
 ```
+
+The worker never contacts Ollama, Anthropic or LanceDB itself: it asks the backend's `/internal` API, authenticated with a shared `INTERNAL_API_TOKEN`. The backend holds all service credentials and stops a model call if the worker that asked for it disconnects.
 
 ## 🚀 Core Features & Architectural Solutions
 
@@ -42,7 +45,7 @@ A production-grade, asynchronous backend architecture built with **Node.js, Type
 
 ## 📋 Prerequisites
 
-*   Node.js (v22+ recommended)
+*   Node.js v22.9+ (the npm scripts use `--env-file-if-exists`)
 *   Redis Server running locally (`sudo apt install redis-server`)
 *   Ollama installed and running on your host machine or WSL2.
 
@@ -63,6 +66,13 @@ npm install
 `apache-arrow` is pinned to 18.1.0, the newest version `@lancedb/lancedb` supports; don't upgrade it independently of LanceDB.
 
 ### 2. Running the Infrastructure
+The backend and worker authenticate to each other with a shared token. Create a `.env` file once (it is git-ignored and loaded automatically by the npm scripts):
+```bash
+cp .env.example .env
+sed -i "s/^INTERNAL_API_TOKEN=.*/INTERNAL_API_TOKEN=$(openssl rand -hex 32)/" .env
+```
+When the processes run on different machines, give each the same `INTERNAL_API_TOKEN`, and set `API_URL` for the worker.
+
 The system operates as two decoupled processes. Open two separate terminal instances to execute the system:
 
 *   **Terminal 1 (API Gatekeeper):**
@@ -104,24 +114,26 @@ The API and worker read their settings from environment variables; the defaults 
 | `PORT` | `3000` | API listen port |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection for BullMQ and token streaming |
 | `QUEUE_NAME` | `llm-processing` | BullMQ queue shared by the API and worker |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama server |
-| `LLM_MODEL` | `qwen2.5:1.5b` | Generation model |
-| `EMBED_MODEL` | `nomic-embed-text` | Embedding model (the vector table assumes 768 dimensions) |
-| `LANCEDB_DIR` | `./.lancedb` | LanceDB storage directory |
+| `INTERNAL_API_TOKEN` | *(none, required)* | Shared secret between the backend and the worker; the backend's `/internal` API stays closed without it |
+| `API_URL` | `http://localhost:<PORT>` | Worker only: where to reach the backend |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Backend only: Ollama server |
+| `LLM_MODEL` | `qwen2.5:1.5b` | Backend only: default generation model |
+| `EMBED_MODEL` | `nomic-embed-text` | Backend only: embedding model (the vector table assumes 768 dimensions) |
+| `LANCEDB_DIR` | `./.lancedb` | Backend only: LanceDB storage directory |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
-| `ANTHROPIC_API_KEY` | *(none)* | Worker only: enables Claude models (an `ant auth login` profile also works) |
-| `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Claude models users may pick; set the same value for the API and worker |
+| `ANTHROPIC_API_KEY` | *(none)* | Backend only: enables Claude models (an `ant auth login` profile also works) |
+| `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Backend only: Claude models users may pick |
 | `CLOUD_CONCURRENCY` | `4` | How many Claude jobs the worker runs at once |
 
 ### 5. Claude Models (optional)
-Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **worker's** environment and restart it. The model picker in the frontend then offers the Claude models from `CLAUDE_MODELS` that the key can access; the info panel shows why if none are available.
+Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **backend's** environment (e.g. in `.env`) and restart it. The model picker in the frontend then offers the Claude models from `CLAUDE_MODELS` that the key can access; the info panel shows why if none are available.
 
 * **Data leaves your machine:** a Claude prompt, including any matching knowledge-base context, is sent to Anthropic's API. Local models keep everything local.
 * **Billed per token:** prices per million input / output tokens are shown in the picker (Claude Opus 5.5 $4 / $20, Claude Haiku 4.5 $1 / $5), and each Claude result shows its cost.
 * **Ollama is still required:** Claude has no embeddings API, so knowledge-base search keeps using `EMBED_MODEL`.
 * Claude jobs use their own queue (`<QUEUE_NAME>-cloud`) and run in parallel, so they never wait behind local GPU jobs. Claude Opus 5.5 runs at low effort and with server-side refusal fallbacks; a request Claude declines fails with a clear message.
 
-Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first.
+Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first. If the backend restarts mid-generation, the worker's job fails and is retried like any transient error.
 
 ## 🔌 API Documentation & Verification
 
@@ -188,6 +200,7 @@ curl http://localhost:3000/api/info
 ## 📁 Project Directory Layout
 
 ```text
+├── .env.example          # Template for local secrets (copy to .env)
 ├── package.json          # Dependencies & development scripts
 ├── frontend              # Standalone Svelte + Vite web UI (own package.json)
 │   └── src
@@ -195,11 +208,16 @@ curl http://localhost:3000/api/info
 │       └── lib           # Components, API client, persisted history store
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
-    ├── config.ts         # Environment-driven settings & Ollama client
-    ├── db.ts             # LanceDB connection mapping layers
+    ├── config.ts         # Environment-driven settings
+    ├── db.ts             # LanceDB connection mapping layers (backend only)
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── index.ts          # Express Server API interface definitions
-    ├── providers         # Ollama and Claude implementations of text generation & analysis
+    ├── internal-api.ts   # Backend: token-protected /internal endpoints the worker calls
+    ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints
+    ├── internal-protocol.ts # Request/response types shared by both sides of /internal
+    ├── model-info.ts     # Backend: model discovery (Ollama models, Claude availability)
+    ├── ollama-client.ts  # Backend: Ollama client
+    ├── providers         # Backend: Ollama and Claude implementations of text generation & analysis
     ├── schema.ts         # Zod data structures & type inferences
     └── worker.ts         # BullMQ queue execution worker routine
 ```

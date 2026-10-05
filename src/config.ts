@@ -1,5 +1,3 @@
-import { Ollama } from 'ollama';
-
 const list = (value: string) => value.split(',').map((item) => item.trim()).filter(Boolean);
 const queueName = process.env.QUEUE_NAME ?? 'llm-processing';
 
@@ -19,7 +17,8 @@ export const config = {
   lancedbDir: process.env.LANCEDB_DIR ?? './.lancedb',
   // Comma-separated frontend origins allowed to call the API from a browser, or '*' for any; empty allows none
   corsOrigins: list(process.env.CORS_ORIGINS ?? '').map((o) => o.replace(/\/$/, '')),
+  // Shared secret the worker sends to the backend's /internal endpoints; unset disables them
+  internalToken: process.env.INTERNAL_API_TOKEN ?? '',
+  // Where the worker reaches the backend
+  apiUrl: (process.env.API_URL ?? `http://localhost:${process.env.PORT ?? 3000}`).replace(/\/$/, ''),
 };
-
-// The ollama package's default client ignores OLLAMA_HOST, so build one that honours the config
-export const ollama = new Ollama({ host: config.ollamaHost });

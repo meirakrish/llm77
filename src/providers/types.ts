@@ -21,6 +21,7 @@ export interface AnalysisResult {
 }
 
 export interface Provider {
-  streamText(model: string, prompt: string, onToken: (token: string) => Promise<void>): Promise<TextResult>;
-  analyze(model: string, text: string): Promise<AnalysisResult>;
+  // signal stops generation early, e.g. when the worker that asked for it disconnects
+  streamText(model: string, prompt: string, onToken: (token: string) => Promise<void>, signal?: AbortSignal): Promise<TextResult>;
+  analyze(model: string, text: string, signal?: AbortSignal): Promise<AnalysisResult>;
 }
