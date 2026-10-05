@@ -4,7 +4,7 @@ import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
 import cors from 'cors';
-import { streamChannel, StreamEvent } from './events';
+import { streamChannel, StreamEvent, workerInfoKey } from './events';
 import { config } from './config';
 
 const app = express();
@@ -103,6 +103,17 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
   res.on('close', cleanup);
 });
 
+// Endpoint describing the models the worker runs; workerOnline is false if no worker has reported recently
+app.get('/api/info', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const raw = await redisConnection.get(workerInfoKey(config.queueName));
+    res.json(raw ? { workerOnline: true, ...JSON.parse(raw) } : { workerOnline: false });
+  } catch (error) {
+    console.error('Info fetch error:', error);
+    res.status(500).json({ error: 'Failed to look up worker info.' });
+  }
+});
+
 // Endpoint to poll the status and result of a job
 app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params;
@@ -119,6 +130,7 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
       jobId: job.id,
       status: state,
       data: job.returnvalue?.structuredData ?? job.returnvalue?.text ?? null,
+      model: job.returnvalue?.model ?? null,
       metrics: job.returnvalue?.metrics || null, // Structural metrics included here
       // A retried job keeps the reason from its last failed attempt even after it succeeds
       failedReason: state === 'failed' ? job.failedReason : null

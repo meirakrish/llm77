@@ -165,6 +165,12 @@ curl http://localhost:3000/api/jobs/<jobId>
 }
 ```
 
+### 5. Worker & Model Info
+Reports the models the running worker actually uses (name, family, size, quantization, digest) and the Ollama version. The worker refreshes this every 30 seconds; `workerOnline` becomes `false` within a minute if no worker is running. The frontend shows it under the title and tags each result with the model that produced it.
+```bash
+curl http://localhost:3000/api/info
+```
+
 ## 📁 Project Directory Layout
 
 ```text
