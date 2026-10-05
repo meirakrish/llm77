@@ -76,7 +76,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small web UI in `frontend/` for asking questions (streamed), analyzing messages and adding knowledge. Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions (streamed), analyzing messages and adding knowledge. Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -84,7 +84,7 @@ cd frontend
 npm install
 npm run dev
 ```
-Then open http://localhost:5173.
+Then open http://localhost:5173. Run `npm run check` to type-check the frontend.
 
 **Separate machines:** build the frontend with the backend's URL baked in, and allow the frontend's origin on the backend.
 ```bash
@@ -175,7 +175,10 @@ curl http://localhost:3000/api/info
 
 ```text
 ├── package.json          # Dependencies & development scripts
-├── frontend              # Standalone Vite web UI (own package.json)
+├── frontend              # Standalone Svelte + Vite web UI (own package.json)
+│   └── src
+│       ├── App.svelte    # Page layout, composer & history list
+│       └── lib           # Components, API client, persisted history store
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
     ├── config.ts         # Environment-driven settings & Ollama client

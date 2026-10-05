@@ -4,34 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LLM Workbench</title>
-<link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
-<main>
-  <h1>LLM Workbench</h1>
-  <p class="sub">Queries run through the local queue and worker. History is saved in this browser.</p>
-  <section class="model-info" id="model-info" aria-live="polite" aria-label="Model information"></section>
-
-  <form class="composer" id="composer">
-    <div class="modes" role="group" aria-label="Mode">
-      <button type="button" data-mode="ask" aria-pressed="true">Ask</button>
-      <button type="button" data-mode="analyze" aria-pressed="false">Analyze</button>
-      <button type="button" data-mode="seed" aria-pressed="false">Add knowledge</button>
-    </div>
-    <textarea id="input" required></textarea>
-    <div class="row">
-      <span class="hint" id="hint"></span>
-      <button class="primary" id="submit" type="submit">Run</button>
-    </div>
-  </form>
-
-  <div class="history-head">
-    <h2>History</h2>
-    <button class="link danger" id="clear" type="button">Clear all</button>
-  </div>
-  <div id="history"></div>
-</main>
-
-<script type="module" src="/src/main.js"></script>
+<div id="app"></div>
+<script type="module" src="/src/main.ts"></script>
 </body>
 </html>
