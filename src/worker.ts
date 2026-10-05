@@ -4,7 +4,7 @@ import { GenerateResponse } from 'ollama';
 import { z } from 'zod';
 import { AnalysisResponseSchema } from './schema';
 import { searchSimilar } from './db';
-import { streamChannel, StreamEvent } from './events';
+import { streamChannel, StreamEvent, workerInfoKey, ModelInfo, WorkerInfo } from './events';
 import { config, ollama } from './config';
 
 const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
@@ -19,6 +19,52 @@ function publish(job: Job, event: StreamEvent) {
 }
 
 console.log('Metrics-Enabled Worker initialized and listening...');
+
+// Advertise the worker's models for the UI; refreshed on a timer and expiring if the worker dies
+const WORKER_INFO_TTL_SEC = 60;
+
+async function describeModel(name: string, installed: { name: string; digest: string }[]): Promise<ModelInfo> {
+  const { details } = await ollama.show({ model: name });
+  const digest = installed.find((m) => m.name === name || m.name === `${name}:latest`)?.digest;
+  return {
+    name,
+    family: details.family,
+    parameterSize: details.parameter_size,
+    quantization: details.quantization_level,
+    digest: digest ? digest.slice(0, 12) : null
+  };
+}
+
+async function publishWorkerInfo() {
+  // Look each piece up independently so one missing model doesn't hide the rest
+  const errors = new Set<string>();
+  const attempt = async <T>(lookup: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await lookup();
+    } catch (error: any) {
+      errors.add(error.message);
+      return fallback;
+    }
+  };
+
+  const installed = await attempt(async () => (await ollama.list()).models, []);
+  const [llmModel, embedModel, ollamaVersion] = await Promise.all([
+    attempt(() => describeModel(config.llmModel, installed), { name: config.llmModel }),
+    attempt(() => describeModel(config.embedModel, installed), { name: config.embedModel }),
+    attempt(async () => {
+      const res = await fetch(`${config.ollamaHost}/api/version`);
+      return ((await res.json()) as { version: string }).version;
+    }, null)
+  ]);
+
+  const info: WorkerInfo = { llmModel, embedModel, ollamaVersion, updatedAt: new Date().toISOString() };
+  if (errors.size) info.error = [...errors].join('; ');
+  await publisher.set(workerInfoKey(config.queueName), JSON.stringify(info), 'EX', WORKER_INFO_TTL_SEC);
+}
+
+const reportInfo = () => publishWorkerInfo().catch((error) => console.error('Failed to publish worker info:', error.message));
+reportInfo();
+const infoTimer = setInterval(reportInfo, (WORKER_INFO_TTL_SEC / 2) * 1000);
 
 // Extract token usage and throughput statistics from an Ollama response
 function buildMetrics(response: GenerateResponse, queueWaitTimeMs: number, executionTimeMs: number) {
@@ -75,9 +121,9 @@ ${prompt}`
   const metrics = buildMetrics(finalPart!, queueWaitTimeMs, Date.now() - startTime);
   console.log(`[Job ${job.id}] Generation completed with ${contextDocs.length} context docs: ${metrics.tokensPerSecond} tok/sec.`);
 
-  if (stream) await publish(job, { type: 'done', text, metrics });
+  if (stream) await publish(job, { type: 'done', text, model: config.llmModel, metrics });
 
-  return { text, contextDocs, metrics };
+  return { text, contextDocs, model: config.llmModel, metrics };
 }
 
 async function analyzeText(job: Job, queueWaitTimeMs: number) {
@@ -119,7 +165,7 @@ Log Message:
   console.log(`[Job ${job.id}] Generation completed: ${metrics.tokensPerSecond} tok/sec.`);
 
   // Return both payload data and metadata metrics
-  return { structuredData: validatedData, metrics };
+  return { structuredData: validatedData, model: config.llmModel, metrics };
 }
 
 const worker = new Worker(
@@ -149,7 +195,9 @@ const worker = new Worker(
 
 async function shutdown(signal: string) {
   console.log(`${signal} received, finishing the active job before exiting...`);
+  clearInterval(infoTimer);
   await worker.close();
+  await publisher.del(workerInfoKey(config.queueName));
   await publisher.quit();
   await redisConnection.quit();
   process.exit(0);

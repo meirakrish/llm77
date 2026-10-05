@@ -35,10 +35,10 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-function formatMetrics(m) {
+function formatMetrics(m, model) {
   if (!m) return null;
   return el('div', { class: 'metrics' },
-    `${m.tokensPerSecond} tok/s · ${m.totalTokens} tokens · ${(m.executionTimeMs / 1000).toFixed(1)}s · queued ${m.queueWaitTimeMs}ms`);
+    `${model ? model + ' · ' : ''}${m.tokensPerSecond} tok/s · ${m.totalTokens} tokens · ${(m.executionTimeMs / 1000).toFixed(1)}s · queued ${m.queueWaitTimeMs}ms`);
 }
 
 function renderBody(entry) {
@@ -75,7 +75,7 @@ function renderEntry(entry) {
       el('button', { class: 'link danger', type: 'button', onclick: () => remove(entry.id) }, 'Delete')),
     el('div', { class: 'query' }, entry.input),
     renderBody(entry),
-    entry.status === 'done' ? formatMetrics(entry.metrics) : null);
+    entry.status === 'done' ? formatMetrics(entry.metrics, entry.model) : null);
 
   const existing = document.getElementById('e-' + entry.id);
   if (existing) existing.replaceWith(node);
@@ -203,7 +203,7 @@ function handleStreamEvent(entry, raw) {
     if (answer) answer.textContent = entry.text;
     else renderEntry(entry);
   } else if (type === 'done') {
-    update(entry, { status: 'done', text: payload.text, metrics: payload.metrics });
+    update(entry, { status: 'done', text: payload.text, model: payload.model, metrics: payload.metrics });
   } else if (type === 'error') {
     update(entry, { status: 'error', error: payload.message });
   }
@@ -236,7 +236,7 @@ async function poll(entry) {
       const job = await res.json();
       if (job.status === 'completed') {
         const result = entry.mode === 'analyze' ? { data: job.data } : { text: job.data };
-        update(entry, { status: 'done', metrics: job.metrics, ...result });
+        update(entry, { status: 'done', model: job.model, metrics: job.metrics, ...result });
         return;
       }
       if (job.status === 'failed') {
@@ -250,10 +250,53 @@ async function poll(entry) {
   }
 }
 
+// ---------- Model info ----------
+
+function modelRow(label, model) {
+  const details = [model.family, model.parameterSize, model.quantization].filter(Boolean).join(' · ');
+  return [
+    el('dt', {}, label),
+    el('dd', {},
+      el('span', { class: 'name' }, model.name),
+      details ? el('span', { class: 'detail' }, ` — ${details}`) : null,
+      model.digest ? el('span', { class: 'digest', title: 'Model digest (identifies the exact build)' }, ` ${model.digest}`) : null)
+  ];
+}
+
+async function refreshInfo() {
+  const box = $('#model-info');
+  let info;
+  try {
+    const res = await fetch(`${API_URL}/api/info`);
+    if (!res.ok) throw new Error();
+    info = await res.json();
+  } catch {
+    box.replaceChildren(el('dt', {}, 'Status'), el('dd', {}, el('span', { class: 'dot off' }), 'Backend unreachable'));
+    return;
+  }
+
+  if (!info.workerOnline) {
+    box.replaceChildren(el('dt', {}, 'Status'),
+      el('dd', {}, el('span', { class: 'dot off' }), 'Worker offline. Queries will wait in the queue until it starts.'));
+    return;
+  }
+
+  box.replaceChildren(
+    ...modelRow('Model', info.llmModel),
+    ...modelRow('Embeddings', info.embedModel),
+    el('dt', {}, 'Ollama'),
+    el('dd', {}, info.ollamaVersion ?? 'unknown'),
+    el('dt', {}, 'Worker'),
+    el('dd', {}, el('span', { class: 'dot ' + (info.error ? 'off' : 'ok') }),
+      info.error ? `Online, but Ollama reported: ${info.error}` : 'Online'));
+}
+
 // ---------- Startup ----------
 
 setMode('ask');
 renderAll();
+refreshInfo();
+setInterval(refreshInfo, 15000);
 
 // Resume anything that was still running when the page was closed
 for (const entry of history) {
