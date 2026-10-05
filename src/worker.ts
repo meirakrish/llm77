@@ -1,12 +1,23 @@
 import { Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
 import ollama, { GenerateResponse } from 'ollama';
+import { z } from 'zod';
 import { AnalysisResponseSchema } from './schema';
 import { searchSimilar } from './db';
+import { streamChannel, StreamEvent } from './events';
 
 const MODEL = 'qwen2.5:1.5b';
 
 const redisConnection = new IORedis({ maxRetriesPerRequest: null });
+// Separate connection for publishing stream events; the worker's connection is used for blocking commands
+const publisher = new IORedis({ maxRetriesPerRequest: null });
+
+// JSON Schema handed to Ollama so the grammar layer enforces the exact response structure
+const ANALYSIS_JSON_SCHEMA = z.toJSONSchema(AnalysisResponseSchema);
+
+function publish(job: Job, event: StreamEvent) {
+  return publisher.publish(streamChannel(job.id!), JSON.stringify(event));
+}
 
 console.log('Metrics-Enabled Worker initialized and listening...');
 
@@ -31,7 +42,7 @@ function buildMetrics(response: GenerateResponse, queueWaitTimeMs: number, execu
 }
 
 async function generateText(job: Job, queueWaitTimeMs: number) {
-  const { prompt } = job.data;
+  const { prompt, stream } = job.data;
   const startTime = Date.now();
 
   // Retrieve related documents from the knowledge base to ground the answer
@@ -46,16 +57,28 @@ Question:
 ${prompt}`
     : prompt;
 
-  const response = await ollama.generate({
+  const parts = await ollama.generate({
     model: MODEL,
     prompt: fullPrompt,
-    stream: false
+    stream: true
   });
 
-  const metrics = buildMetrics(response, queueWaitTimeMs, Date.now() - startTime);
+  // Accumulate the full text while forwarding each token to streaming clients
+  let text = '';
+  let finalPart: GenerateResponse | undefined;
+  for await (const part of parts) {
+    text += part.response;
+    if (stream && part.response) await publish(job, { type: 'token', token: part.response });
+    if (part.done) finalPart = part;
+  }
+
+  // The final chunk carries Ollama's token and timing statistics
+  const metrics = buildMetrics(finalPart!, queueWaitTimeMs, Date.now() - startTime);
   console.log(`[Job ${job.id}] Generation completed with ${contextDocs.length} context docs: ${metrics.tokensPerSecond} tok/sec.`);
 
-  return { text: response.response, contextDocs, metrics };
+  if (stream) await publish(job, { type: 'done', text, metrics });
+
+  return { text, contextDocs, metrics };
 }
 
 async function analyzeText(job: Job, queueWaitTimeMs: number) {
@@ -78,7 +101,7 @@ Expected JSON Structure:
 
 Log Message:
 "${text}"`,
-    format: 'json',
+    format: ANALYSIS_JSON_SCHEMA,
     stream: false,
     options: { temperature: 0.0 }
   });
@@ -117,6 +140,7 @@ const worker = new Worker(
       }
     } catch (error: any) {
       console.error(`[Job ${job.id}] System execution failed:`, error.message);
+      if (job.data.stream) await publish(job, { type: 'error', message: error.message });
       throw error;
     }
   },

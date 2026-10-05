@@ -70,16 +70,20 @@ The system operates as two decoupled processes. Open two separate terminal insta
     ```
 *   **Terminal 2 (Background Queue Worker):**
     ```bash
-    npx ts-node src/worker.ts
+    npm run dev:worker
     ```
+
+For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ## 🔌 API Documentation & Verification
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
-Directly streams conversational responses back to the client using Server-Sent Events (SSE).
+Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`) or `error` (`message`).
 ```bash
-curl -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
+curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
 ```
+
+To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4).
 
 ### 2. Seed RAG Knowledge Base
 Injects domain-specific background context into the local LanceDB vector index.
@@ -132,6 +136,7 @@ curl http://localhost:3000/api/jobs/<jobId>
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
     ├── db.ts             # LanceDB connection mapping layers
+    ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── index.ts          # Express Server API interface definitions
     ├── schema.ts         # Zod data structures & type inferences
     └── worker.ts         # BullMQ queue execution worker routine

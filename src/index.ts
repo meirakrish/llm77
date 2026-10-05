@@ -3,6 +3,7 @@ import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { embed, getVectorTable } from './db';
 import crypto from 'crypto';
+import { streamChannel, StreamEvent } from './events';
 
 const app = express();
 const PORT = 3000;
@@ -37,6 +38,55 @@ app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
     console.error('Queue error:', error);
     res.status(500).json({ error: 'Failed to queue the request.' });
   }
+});
+
+// Endpoint to queue a generation task and stream its tokens back via Server-Sent Events
+app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
+  const { prompt } = req.body;
+
+  if (!prompt || typeof prompt !== 'string') {
+    res.status(400).json({ error: 'A text prompt is required.' });
+    return;
+  }
+
+  // Subscribe before queueing so no tokens are published before we are listening
+  const jobId = crypto.randomUUID();
+  const subscriber = redisConnection.duplicate();
+  const cleanup = () => {
+    subscriber.quit().catch(() => {});
+  };
+
+  try {
+    await subscriber.subscribe(streamChannel(jobId));
+    // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to streams too
+    await llmQueue.add('generate-text', { prompt, stream: true }, { jobId });
+  } catch (error) {
+    cleanup();
+    console.error('Stream queue error:', error);
+    res.status(500).json({ error: 'Failed to queue the stream request.' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive'
+  });
+  res.write(`event: queued\ndata: ${JSON.stringify({ jobId })}\n\n`);
+
+  subscriber.on('message', (_channel, message) => {
+    const event: StreamEvent = JSON.parse(message);
+    const { type, ...data } = event;
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    if (type === 'done' || type === 'error') {
+      cleanup();
+      res.end();
+    }
+  });
+
+  // Stop listening if the client goes away; the job itself still completes and can be polled
+  res.on('close', cleanup);
 });
 
 // Endpoint to poll the status and result of a job
