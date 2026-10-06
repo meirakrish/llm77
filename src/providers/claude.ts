@@ -89,14 +89,14 @@ async function withErrors<T>(run: () => Promise<T>): Promise<T> {
 }
 
 export const claudeProvider: Provider = {
-  streamText(model, prompt, onToken, signal) {
+  streamText(model, messages, onToken, signal) {
     return withErrors(async () => {
       const started = Date.now();
       const stream = getClient().beta.messages.stream(
         {
           model,
           max_tokens: MAX_TOKENS,
-          messages: [{ role: 'user', content: prompt }],
+          messages,
           ...requestOptions(model)
         },
         { signal }

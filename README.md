@@ -55,6 +55,7 @@ Pull the required execution and embedding models before starting the application
 ollama pull qwen2.5:1.5b
 ollama pull nomic-embed-text
 ```
+Optionally pull a second generation model to use the frontend's Compare mode, e.g. `ollama pull qwen2.5:0.5b`.
 
 ## 🛠️ Getting Started
 
@@ -87,7 +88,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions (streamed, with the knowledge base sources each answer used), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -149,7 +150,12 @@ Queues a RAG-grounded generation job and streams its tokens back to the client u
 curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
 ```
 
-To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4).
+To continue a conversation, send `messages` instead of `prompt`: the turns so far, alternating `user` and `assistant` and ending with the new question. The knowledge base is searched with the newest question plus the one before it, so follow-ups like "what database does it use?" still find what "it" refers to.
+```bash
+curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"messages": [{"role": "user", "content": "Who built Project Aethelgard?"}, {"role": "assistant", "content": "Alex built it."}, {"role": "user", "content": "What database does it use?"}]}'
+```
+
+To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4). The frontend's Compare mode sends one such request per model.
 
 ### 2. Manage the RAG Knowledge Base
 Documents are split into overlapping chunks (`CHUNK_SIZE`/`CHUNK_OVERLAP`) and each chunk is embedded into the local LanceDB index. Ask uses at most `RAG_TOP_K` chunks, and only those within `RAG_MAX_DISTANCE` of the question, so unrelated questions get no context.
@@ -228,6 +234,7 @@ curl http://localhost:3000/api/info
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
     ├── chunking.ts       # Splits documents into overlapping chunks
+    ├── chat.ts           # Conversation validation and knowledge base grounding
     ├── config.ts         # Environment-driven settings
     ├── db.ts             # Backend: LanceDB knowledge base (documents, chunks, relevance search)
     ├── events.ts         # Redis pub/sub channel & SSE stream event types

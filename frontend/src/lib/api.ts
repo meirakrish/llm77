@@ -1,4 +1,4 @@
-import type { Analysis, ApiInfo, DocumentDetail, DocumentSummary, Metrics, ModelsResponse, SearchResult, Source } from './types';
+import type { Analysis, ApiInfo, ChatMessage, DocumentDetail, DocumentSummary, Metrics, ModelsResponse, SearchResult, Source } from './types';
 
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -41,9 +41,9 @@ function parseEvent(raw: string): StreamEvent {
   return { type, ...(data ? JSON.parse(data) : {}) } as StreamEvent;
 }
 
-// Queue a generation job and yield its Server-Sent Events as they arrive
-export async function* streamAsk(prompt: string, model?: string): AsyncGenerator<StreamEvent> {
-  const res = await postJson('/api/stream', { prompt, model });
+// Queue a generation job for a conversation and yield its Server-Sent Events as they arrive
+export async function* streamChat(messages: ChatMessage[], model?: string): AsyncGenerator<StreamEvent> {
+  const res = await postJson('/api/stream', { messages, model });
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
 

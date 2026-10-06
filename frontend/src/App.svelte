@@ -3,6 +3,7 @@
   import HistoryEntry from './lib/HistoryEntry.svelte';
   import Knowledge from './lib/Knowledge.svelte';
   import ModelInfo from './lib/ModelInfo.svelte';
+  import ModelChecklist from './lib/ModelChecklist.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
   import { history } from './lib/history.svelte';
   import { MODES, type Entry, type RunMode } from './lib/types';
@@ -10,6 +11,8 @@
   let mode = $state<RunMode>('ask');
   let input = $state('');
   let model = $state('');
+  // Models ticked for Compare mode
+  let compareModels = $state<string[]>([]);
   let textarea = $state<HTMLTextAreaElement>();
   // Unsaved text in the Knowledge base tab's editor, kept across tab switches
   let knowledgeDraft = $state('');
@@ -30,8 +33,10 @@
   function submit(event: SubmitEvent) {
     event.preventDefault();
     const text = input.trim();
-    if (!text) return;
-    history.add(mode, text, model || undefined);
+    if (!text || (mode === 'compare' && compareModels.length < 2)) return;
+    if (mode === 'ask') history.ask(text, model || undefined);
+    else if (mode === 'compare') history.compare(text, compareModels);
+    else history.analyze(text, model || undefined);
     input = '';
   }
 
@@ -57,8 +62,9 @@
     }
     mode = entry.mode;
     input = entry.input;
-    // The picker drops it again if that model is no longer offered
-    model = entry.requestedModel ?? '';
+    // The pickers drop models that are no longer offered
+    if (entry.mode === 'compare') compareModels = entry.runs.flatMap((run) => (run.requestedModel ? [run.requestedModel] : []));
+    else model = entry.requestedModel ?? '';
     await tick();
     textarea?.focus();
   }
@@ -93,7 +99,11 @@
           </button>
         {/each}
       </div>
-      <ModelPicker bind:value={model} />
+      {#if mode === 'compare'}
+        <ModelChecklist bind:value={compareModels} />
+      {:else}
+        <ModelPicker bind:value={model} />
+      {/if}
       <textarea
         id="input"
         required
@@ -105,12 +115,17 @@
       <div class="row">
         <span class="hint">
           {MODES[mode].hint}
-          {#if mode === 'ask'}
+          {#if mode !== 'analyze'}
             <button class="link inline" type="button" onclick={() => showView('knowledge')}>Manage the knowledge base</button>.
           {/if}
           Ctrl+Enter to run.
         </span>
-        <button class="primary" type="submit">Run</button>
+        <button
+          class="primary"
+          type="submit"
+          disabled={mode === 'compare' && compareModels.length < 2}
+          title={mode === 'compare' && compareModels.length < 2 ? 'Select at least two models' : undefined}
+        >Run</button>
       </div>
     </form>
 
@@ -122,7 +137,12 @@
     </div>
     <div id="history">
       {#each history.entries as entry (entry.id)}
-        <HistoryEntry {entry} onreuse={() => reuse(entry)} ondelete={() => history.remove(entry.id)} />
+        <HistoryEntry
+          {entry}
+          onreuse={() => reuse(entry)}
+          ondelete={() => history.remove(entry.id)}
+          onfollowup={(text) => entry.mode === 'ask' && history.followUp(entry, text)}
+        />
       {:else}
         <p class="empty">Nothing yet. Run a query to start your history.</p>
       {/each}
@@ -167,6 +187,7 @@
   .hint { color: var(--muted); font-size: 13px; flex: 1 1 280px; }
   .link.inline { color: var(--accent); padding: 0; }
   .link.inline:hover { text-decoration: underline; color: var(--accent); }
+  .primary:disabled { opacity: .5; cursor: default; }
   .primary {
     border: 0; background: var(--accent); color: var(--accent-text);
     padding: 8px 16px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer;

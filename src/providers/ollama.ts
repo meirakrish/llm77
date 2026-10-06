@@ -1,5 +1,5 @@
 import { UnrecoverableError } from 'bullmq';
-import { GenerateResponse } from 'ollama';
+import { ChatResponse, GenerateResponse } from 'ollama';
 import { z } from 'zod';
 import { ollama } from '../ollama-client';
 import { AnalysisResponseSchema } from '../schema';
@@ -9,7 +9,7 @@ import { Provider, Usage } from './types';
 const ANALYSIS_JSON_SCHEMA = z.toJSONSchema(AnalysisResponseSchema);
 
 // Extract token usage and throughput statistics from an Ollama response
-function usageOf(response: GenerateResponse): Usage {
+function usageOf(response: GenerateResponse | ChatResponse): Usage {
   const completionTokens = response.eval_count || 0;
   // eval_duration is in nanoseconds
   const generationDurationSec = (response.eval_duration || 1) / 1_000_000_000;
@@ -21,15 +21,17 @@ function usageOf(response: GenerateResponse): Usage {
 }
 
 export const ollamaProvider: Provider = {
-  async streamText(model, prompt, onToken, signal) {
-    const parts = await ollama.generate({ model, prompt, stream: true });
+  async streamText(model, messages, onToken, signal) {
+    // The chat endpoint applies the model's own conversation template to the turns
+    const parts = await ollama.chat({ model, messages, stream: true });
     signal?.addEventListener('abort', () => parts.abort(), { once: true });
 
     let text = '';
-    let finalPart: GenerateResponse | undefined;
+    let finalPart: ChatResponse | undefined;
     for await (const part of parts) {
-      text += part.response;
-      if (part.response) await onToken(part.response);
+      const token = part.message.content;
+      text += token;
+      if (token) await onToken(token);
       if (part.done) finalPart = part;
     }
 
