@@ -55,13 +55,13 @@ async function generateText(job: Job, model: string, queueWaitTimeMs: number) {
   const { prompt, stream } = job.data;
   const startTime = Date.now();
 
-  // Retrieve related documents from the knowledge base to ground the answer
-  const contextDocs = await backend.search(prompt);
-  const fullPrompt = contextDocs.length
+  // Retrieve relevant chunks from the knowledge base to ground the answer; returned as the answer's sources
+  const sources = await backend.search(prompt);
+  const fullPrompt = sources.length
     ? `Use the following context to answer the question. If the context is not relevant, answer from your own knowledge.
 
 Context:
-${contextDocs.map((doc, i) => `[${i + 1}] ${doc}`).join('\n')}
+${sources.map((chunk, i) => `[${i + 1}] (from "${chunk.source}") ${chunk.text}`).join('\n\n')}
 
 Question:
 ${prompt}`
@@ -73,11 +73,11 @@ ${prompt}`
   });
 
   const metrics = buildMetrics(result.usage, queueWaitTimeMs, Date.now() - startTime);
-  console.log(`[Job ${job.id}] ${result.model} completed with ${contextDocs.length} context docs: ${metrics.tokensPerSecond} tok/sec.`);
+  console.log(`[Job ${job.id}] ${result.model} completed with ${sources.length} context chunks: ${metrics.tokensPerSecond} tok/sec.`);
 
-  if (stream) await publish(job, { type: 'done', text: result.text, model: result.model, metrics });
+  if (stream) await publish(job, { type: 'done', text: result.text, model: result.model, metrics, sources });
 
-  return { text: result.text, contextDocs, model: result.model, metrics };
+  return { text: result.text, sources, model: result.model, metrics };
 }
 
 async function analyzeText(job: Job, model: string, queueWaitTimeMs: number) {

@@ -1,13 +1,13 @@
 <script lang="ts">
   import { formatCost } from './format';
-  import { MODES, type Entry } from './types';
+  import { BADGES, type Entry } from './types';
 
   let { entry, onreuse, ondelete }: { entry: Entry; onreuse: () => void; ondelete: () => void } = $props();
 </script>
 
 <article class="entry" id="e-{entry.id}">
   <div class="entry-head">
-    <span class="badge">{MODES[entry.mode].badge}</span>
+    <span class="badge">{BADGES[entry.mode]}</span>
     <time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>
     {#if entry.model ?? entry.requestedModel}
       <span class="model">{entry.model ?? entry.requestedModel}</span>
@@ -46,9 +46,31 @@
       {/if}
     {/if}
   {:else if entry.status === 'done'}
-    <div>Added to the knowledge base.</div>
+    <div>{entry.text || 'Added to the knowledge base.'}</div>
   {:else}
     <div class="status">Embedding…</div>
+  {/if}
+
+  {#if entry.mode === 'ask' && entry.status === 'done' && entry.sources}
+    {#if entry.sources.length}
+      <details class="sources">
+        <summary>
+          {entry.sources.length} source{entry.sources.length === 1 ? '' : 's'}:
+          {[...new Set(entry.sources.map((s) => s.source))].join(', ')}
+        </summary>
+        <ol>
+          {#each entry.sources as source, i (i)}
+            <li>
+              <span class="source-name">{source.source}</span>
+              <span class="source-meta">part {source.chunkIndex + 1} · distance {source.distance}</span>
+              <div class="snippet">{source.text}</div>
+            </li>
+          {/each}
+        </ol>
+      </details>
+    {:else}
+      <div class="no-sources">Nothing relevant in the knowledge base; answered by the model alone.</div>
+    {/if}
   {/if}
 
   {#if entry.status === 'done' && entry.metrics}
@@ -88,4 +110,15 @@
   .chip.Medium { color: var(--warn); border-color: currentColor; }
   .chip.Low { color: var(--ok); border-color: currentColor; }
   .actions { margin: 6px 0 0; padding-left: 20px; }
+
+  .sources, .no-sources { margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .sources summary { cursor: pointer; overflow-wrap: anywhere; }
+  .sources ol { margin: 8px 0 0; padding-left: 22px; }
+  .sources li { margin-bottom: 8px; }
+  .source-name { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+  .source-meta { font-size: 12px; margin-left: 4px; font-variant-numeric: tabular-nums; }
+  .snippet {
+    margin-top: 4px; padding: 6px 8px; border-left: 2px solid var(--border);
+    white-space: pre-wrap; overflow-wrap: anywhere; max-height: 9em; overflow-y: auto;
+  }
 </style>

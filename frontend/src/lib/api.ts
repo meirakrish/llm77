@@ -1,4 +1,4 @@
-import type { Analysis, ApiInfo, Metrics, ModelsResponse } from './types';
+import type { Analysis, ApiInfo, DocumentDetail, DocumentSummary, Metrics, ModelsResponse, SearchResult, Source } from './types';
 
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -6,7 +6,7 @@ const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 export type StreamEvent =
   | { type: 'queued'; jobId: string }
   | { type: 'token'; token: string }
-  | { type: 'done'; text: string; model: string; metrics: Metrics }
+  | { type: 'done'; text: string; model: string; metrics: Metrics; sources?: Source[] }
   | { type: 'error'; message: string };
 
 export interface JobStatus {
@@ -15,21 +15,21 @@ export interface JobStatus {
   data: Analysis | string | null;
   model: string | null;
   metrics: Metrics | null;
+  sources?: Source[] | null;
   failedReason: string | null;
 }
 
-async function postJson(path: string, body: unknown): Promise<Response> {
-  const res = await fetch(API_URL + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(API_URL + path, init);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Request failed (${res.status})`);
   }
   return res;
 }
+
+const postJson = (path: string, body: unknown) =>
+  request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 function parseEvent(raw: string): StreamEvent {
   let type = 'message';
@@ -66,8 +66,31 @@ export async function queueAnalysis(text: string, model?: string): Promise<strin
   return (await res.json()).jobId;
 }
 
-export async function seed(text: string): Promise<void> {
-  await postJson('/api/seed', { text });
+// Without a source name the backend uses the text's first line
+export async function addDocument(text: string, source?: string): Promise<DocumentSummary> {
+  return (await (await postJson('/api/documents', { text, source })).json()).document;
+}
+
+export async function uploadDocument(file: File): Promise<DocumentSummary> {
+  const res = await request(`/api/documents/upload?filename=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+  return (await res.json()).document;
+}
+
+export async function listDocuments(): Promise<DocumentSummary[]> {
+  return (await (await request('/api/documents')).json()).documents;
+}
+
+export async function getDocument(id: string): Promise<DocumentDetail> {
+  return (await request(`/api/documents/${encodeURIComponent(id)}`)).json();
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  await request(`/api/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// The chunks Ask would consider for a question, each marked with whether it passes the relevance cutoff
+export async function searchDocuments(query: string): Promise<{ maxDistance: number; results: SearchResult[] }> {
+  return (await postJson('/api/documents/search', { query })).json();
 }
 
 // Returns null when the job no longer exists (e.g. expired from the queue)

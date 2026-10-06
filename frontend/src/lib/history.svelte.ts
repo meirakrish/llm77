@@ -1,5 +1,5 @@
 import * as api from './api';
-import type { Analysis, Entry, Mode } from './types';
+import type { Analysis, Entry, RunMode } from './types';
 
 const STORE_KEY = 'llm77.history.v1';
 
@@ -26,13 +26,12 @@ class History {
     return this.entries.some((e) => e.id === entry.id);
   }
 
-  add(mode: Mode, input: string, requestedModel?: string) {
+  add(mode: RunMode, input: string, requestedModel?: string) {
     this.entries.unshift({
       id: crypto.randomUUID(),
       mode,
       input,
-      // Knowledge is embedded locally, so no model choice applies
-      ...(requestedModel && mode !== 'seed' ? { requestedModel } : {}),
+      ...(requestedModel ? { requestedModel } : {}),
       createdAt: new Date().toISOString(),
       status: 'pending',
       text: ''
@@ -73,8 +72,7 @@ class History {
   private async run(entry: Entry) {
     try {
       if (entry.mode === 'ask') await this.runAsk(entry);
-      else if (entry.mode === 'analyze') await this.runAnalyze(entry);
-      else await this.runSeed(entry);
+      else await this.runAnalyze(entry);
     } catch (error) {
       this.update(entry, { status: 'error', error: (error as Error).message });
     }
@@ -88,7 +86,13 @@ class History {
         // Not persisted per token; the final text is saved on 'done'
         entry.text += event.token;
       } else if (event.type === 'done') {
-        this.update(entry, { status: 'done', text: event.text, model: event.model, metrics: event.metrics });
+        this.update(entry, {
+          status: 'done',
+          text: event.text,
+          model: event.model,
+          metrics: event.metrics,
+          sources: event.sources ?? null
+        });
       } else if (event.type === 'error') {
         this.update(entry, { status: 'error', error: event.message });
       }
@@ -103,11 +107,6 @@ class History {
     await this.poll(entry);
   }
 
-  private async runSeed(entry: Entry) {
-    await api.seed(entry.input);
-    this.update(entry, { status: 'done' });
-  }
-
   // Poll a queued job until it settles; used for analysis and to resume jobs after a reload
   private async poll(entry: Entry) {
     for (;;) {
@@ -119,7 +118,8 @@ class History {
           return;
         }
         if (job.status === 'completed') {
-          const result = entry.mode === 'analyze' ? { data: job.data as Analysis } : { text: job.data as string };
+          const result =
+            entry.mode === 'analyze' ? { data: job.data as Analysis } : { text: job.data as string, sources: job.sources ?? null };
           this.update(entry, { status: 'done', model: job.model, metrics: job.metrics, ...result });
           return;
         }
