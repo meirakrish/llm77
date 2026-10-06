@@ -1,6 +1,6 @@
 import { Worker, Job, UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
-import { streamChannel, type StreamEvent } from './events';
+import { appendJobEvent, CANCEL_CHANNEL, cancelKey, CANCELLED_MESSAGE, type StreamEvent } from './events';
 import { config } from './config';
 import * as backend from './internal-client';
 import type { ChatMessage, Usage } from './providers/types';
@@ -14,11 +14,13 @@ if (!config.internalToken) {
 
 const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
 const cloudConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-// Separate connection for publishing stream events; the workers' connections are used for blocking commands
+// Separate connection for writing stream events; the workers' connections are used for blocking commands
 const publisher = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
+// Subscribed connections can't run other commands, so cancel requests get their own
+const cancelSubscriber = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
 
 function publish(job: Job, event: StreamEvent) {
-  return publisher.publish(streamChannel(job.id!), JSON.stringify(event));
+  return appendJobEvent(publisher, job.id!, event);
 }
 
 console.log(`Metrics-Enabled Worker initialized and listening (backend: ${config.apiUrl})...`);
@@ -52,19 +54,19 @@ function buildMetrics(usage: Usage, queueWaitTimeMs: number, executionTimeMs: nu
   };
 }
 
-async function generateText(job: Job, model: string, queueWaitTimeMs: number) {
+async function generateText(job: Job, model: string, queueWaitTimeMs: number, signal?: AbortSignal) {
   const { stream } = job.data;
   // Jobs queued before conversations carry a single prompt
   const messages: ChatMessage[] = job.data.messages ?? [{ role: 'user', content: job.data.prompt }];
   const startTime = Date.now();
 
   // Retrieve relevant chunks from the knowledge base to ground the answer; returned as the answer's sources
-  const sources = await backend.search(retrievalQuery(messages));
+  const sources = await backend.search(retrievalQuery(messages), signal);
 
   // Forward each token to streaming clients as it is generated
   const result = await backend.generate(model, withContext(messages, sources), async (token) => {
     if (stream) await publish(job, { type: 'token', token });
-  });
+  }, signal);
 
   const metrics = buildMetrics(result.usage, queueWaitTimeMs, Date.now() - startTime);
   console.log(`[Job ${job.id}] ${result.model} completed (${messages.length} messages, ${sources.length} context chunks): ${metrics.tokensPerSecond} tok/sec.`);
@@ -74,9 +76,9 @@ async function generateText(job: Job, model: string, queueWaitTimeMs: number) {
   return { text: result.text, sources, model: result.model, metrics };
 }
 
-async function analyzeText(job: Job, model: string, queueWaitTimeMs: number) {
+async function analyzeText(job: Job, model: string, queueWaitTimeMs: number, signal?: AbortSignal) {
   const startTime = Date.now();
-  const result = await backend.analyze(model, job.data.text);
+  const result = await backend.analyze(model, job.data.text, signal);
   const metrics = buildMetrics(result.usage, queueWaitTimeMs, Date.now() - startTime);
 
   console.log(`[Job ${job.id}] ${result.model} analysis completed: ${metrics.tokensPerSecond} tok/sec.`);
@@ -85,7 +87,8 @@ async function analyzeText(job: Job, model: string, queueWaitTimeMs: number) {
   return { structuredData: result.data, model: result.model, metrics };
 }
 
-async function processJob(job: Job) {
+// signal fires when the user cancels the job (see the cancel subscription below)
+async function processJob(job: Job, _token?: string, signal?: AbortSignal) {
   // Calculate Queue Latency (Time spent waiting in Redis)
   const queueWaitTimeMs = Date.now() - job.timestamp;
   // The API resolves the model when queueing; jobs from older versions have none and get the backend's default
@@ -93,18 +96,23 @@ async function processJob(job: Job) {
   console.log(`[Job ${job.id}] Picked up after waiting ${queueWaitTimeMs}ms in queue (${model ?? 'default model'}).`);
 
   try {
+    // Cancelled before this worker could hear about it
+    if (await publisher.exists(cancelKey(job.id!))) throw new UnrecoverableError(CANCELLED_MESSAGE);
     switch (job.name) {
       case 'generate-text':
-        return await generateText(job, model!, queueWaitTimeMs);
+        return await generateText(job, model!, queueWaitTimeMs, signal);
       case 'analyze-text':
-        return await analyzeText(job, model!, queueWaitTimeMs);
+        return await analyzeText(job, model!, queueWaitTimeMs, signal);
       default:
         throw new UnrecoverableError(`Unknown job type: ${job.name}`);
     }
   } catch (error: any) {
-    console.error(`[Job ${job.id}] System execution failed:`, error.message);
-    if (job.data.stream) await publish(job, { type: 'error', message: error.message });
-    throw error;
+    // Aborting surfaces as whatever the interrupted request threw; report it as the cancellation it is, and don't retry
+    const cancelled = signal?.aborted || error.message === CANCELLED_MESSAGE;
+    if (cancelled) console.log(`[Job ${job.id}] Cancelled.`);
+    else console.error(`[Job ${job.id}] System execution failed:`, error.message);
+    if (job.data.stream) await publish(job, { type: 'error', message: cancelled ? CANCELLED_MESSAGE : error.message, cancelled });
+    throw cancelled ? new UnrecoverableError(CANCELLED_MESSAGE) : error;
   }
 }
 
@@ -115,12 +123,18 @@ const cloudWorker = new Worker(config.cloudQueueName, processJob, {
   concurrency: config.cloudConcurrency
 });
 
+// The API publishes the IDs of jobs to cancel; only the worker running a job can stop it
+cancelSubscriber.subscribe(CANCEL_CHANNEL).catch((error) => console.error('Cancel subscription failed:', error.message));
+cancelSubscriber.on('message', (_channel, jobId: string) => {
+  if (localWorker.cancelJob(jobId) || cloudWorker.cancelJob(jobId)) console.log(`[Job ${jobId}] Cancel requested.`);
+});
+
 async function shutdown(signal: string) {
   console.log(`${signal} received, finishing active jobs before exiting...`);
   clearInterval(heartbeatTimer);
   await Promise.all([localWorker.close(), cloudWorker.close()]);
   await backend.heartbeat(false).catch((error) => console.error('Failed to clear heartbeat:', error.message));
-  await Promise.all([publisher.quit(), redisConnection.quit(), cloudConnection.quit()]);
+  await Promise.all([publisher.quit(), cancelSubscriber.quit(), redisConnection.quit(), cloudConnection.quit()]);
   process.exit(0);
 }
 

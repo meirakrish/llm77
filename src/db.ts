@@ -200,7 +200,8 @@ export async function searchChunks(query: string, limit = config.ragTopK): Promi
   // duplicates don't crowd other documents out of the results
   const rows = await table.vectorSearch(await embed(query))
     .distanceType('cosine')
-    .select(['doc_id', 'source', 'chunk_index', 'text'])
+    // _distance is listed explicitly; LanceDB warns that leaving it implicit is deprecated
+    .select(['doc_id', 'source', 'chunk_index', 'text', '_distance'])
     .limit(limit * 3)
     .toArray();
   const seen = new Set<string>();

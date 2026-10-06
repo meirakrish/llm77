@@ -6,15 +6,18 @@ import type { ContextChunk } from './db';
 
 // The worker's only route to models and the knowledge base: the backend's token-protected /internal API
 
-async function call(method: string, path: string, body?: unknown): Promise<Response> {
+// signal aborts the request; the backend then stops any model call it started for it
+async function call(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<Response> {
   let res: Response;
   try {
     res = await fetch(`${config.apiUrl}/internal${path}`, {
       method,
       headers: { Authorization: `Bearer ${config.internalToken}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined
+      body: body ? JSON.stringify(body) : undefined,
+      signal
     });
   } catch (error: any) {
+    if (signal?.aborted) throw error;
     // Backend down or restarting; worth retrying
     throw new Error(`Backend unreachable at ${config.apiUrl}: ${error.cause?.code ?? error.message}`);
   }
@@ -30,9 +33,10 @@ async function call(method: string, path: string, body?: unknown): Promise<Respo
 export async function generate(
   model: string,
   messages: ChatMessage[],
-  onToken: (token: string) => Promise<void>
+  onToken: (token: string) => Promise<void>,
+  signal?: AbortSignal
 ): Promise<TextResult> {
-  const res = await call('POST', '/generate', { model, messages });
+  const res = await call('POST', '/generate', { model, messages }, signal);
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
 
@@ -61,12 +65,12 @@ export async function generate(
   throw new Error('Connection to the backend closed before generation finished.');
 }
 
-export async function analyze(model: string, text: string): Promise<AnalyzeResponse> {
-  return (await call('POST', '/analyze', { model, text })).json();
+export async function analyze(model: string, text: string, signal?: AbortSignal): Promise<AnalyzeResponse> {
+  return (await call('POST', '/analyze', { model, text }, signal)).json();
 }
 
-export async function search(query: string): Promise<ContextChunk[]> {
-  const { docs }: SearchResponse = await (await call('POST', '/search', { query })).json();
+export async function search(query: string, signal?: AbortSignal): Promise<ContextChunk[]> {
+  const { docs }: SearchResponse = await (await call('POST', '/search', { query }, signal)).json();
   return docs;
 }
 

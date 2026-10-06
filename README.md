@@ -88,7 +88,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -145,7 +145,7 @@ Queued jobs retry up to 3 times with exponential backoff, except streams and sch
 `POST /api/stream`, `/api/jobs` and `/api/analyze` accept an optional `"model"` (one listed by `GET /api/models`); without it, the worker's `LLM_MODEL` is used.
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
-Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`, `sources`) or `error` (`message`). `sources` lists the knowledge base chunks the answer was grounded in (empty when nothing was relevant enough).
+Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`); `position` (`ahead`: jobs that will run first, sent when it changes; `null` once the job is running); `token` (`token`); then `done` (`text`, `metrics`, `sources`) or `error` (`message`, and `cancelled: true` if it was stopped). `sources` lists the knowledge base chunks the answer was grounded in (empty when nothing was relevant enough).
 ```bash
 curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
 ```
@@ -182,8 +182,18 @@ Submits a messy log text message to the job queue for type-safe parameter extrac
 curl -X POST http://localhost:3000/api/analyze   -H "Content-Type: application/json"   -d '{"text": "Urgent! Our API billing integration is throwing 500 errors on the checkout endpoint since the last deploy. Need eyes immediately."}'
 ```
 
+#### Reconnecting and cancelling
+A streamed job's events are kept in a Redis Stream for an hour, and every stored event carries an SSE `id`. If the connection drops (or the page reloads), follow the job again: events after `after` (or the standard `Last-Event-ID` header) are replayed, then it continues live. Without either, it replays from the start. After the hour, a finished job's result is sent as its final event.
+```bash
+curl -N "http://localhost:3000/api/jobs/<jobId>/stream?after=<lastEventId>"
+```
+`DELETE /api/jobs/<jobId>` cancels any job: a waiting one is removed from the queue (`204`), a running one is stopped by its worker (`202`), which also stops the model call. A cancelled job ends with an `error` event (`cancelled: true`) and is not retried; already finished jobs return `409`.
+```bash
+curl -X DELETE http://localhost:3000/api/jobs/<jobId>
+```
+
 ### 4. Fetch Job Status & Metrics Tracking
-Retrieves the processed payload data alongside full execution performance diagnostics using the `jobId` returned from the ingestion queue.
+Retrieves the processed payload data alongside full execution performance diagnostics using the `jobId` returned from the ingestion queue. While the job waits, `ahead` is the number of jobs that will run before it.
 ```bash
 curl http://localhost:3000/api/jobs/<jobId>
 ```
@@ -193,6 +203,7 @@ curl http://localhost:3000/api/jobs/<jobId>
 {
   "jobId": "4",
   "status": "completed",
+  "ahead": null,
   "data": {
     "summary": "The checkout endpoint is throwing 500 errors due to a billing integration failure since the last deployment.",
     "category": "Billing",
@@ -243,6 +254,7 @@ curl http://localhost:3000/api/info
     ├── internal-api.ts   # Backend: token-protected /internal endpoints the worker calls
     ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints
     ├── internal-protocol.ts # Request/response types shared by both sides of /internal
+    ├── job-stream.ts     # Backend: replays and follows a job's events as SSE, with queue position
     ├── model-info.ts     # Backend: model discovery (Ollama models, Claude availability)
     ├── ollama-client.ts  # Backend: Ollama client
     ├── providers         # Backend: Ollama and Claude implementations of text generation & analysis
