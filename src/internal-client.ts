@@ -2,6 +2,7 @@ import { UnrecoverableError } from 'bullmq';
 import { config } from './config';
 import type { AnalyzeResponse, GenerateEvent, InternalError, SearchResponse } from './internal-protocol';
 import type { TextResult } from './providers/types';
+import type { ContextChunk } from './db';
 
 // The worker's only route to models and the knowledge base: the backend's token-protected /internal API
 
@@ -60,7 +61,7 @@ export async function analyze(model: string, text: string): Promise<AnalyzeRespo
   return (await call('POST', '/analyze', { model, text })).json();
 }
 
-export async function search(query: string): Promise<string[]> {
+export async function search(query: string): Promise<ContextChunk[]> {
   const { docs }: SearchResponse = await (await call('POST', '/search', { query })).json();
   return docs;
 }

@@ -1,5 +1,6 @@
 import type { AnalysisResponse } from './schema';
 import type { Usage } from './providers/types';
+import type { ContextChunk } from './db';
 
 // Contract between the worker and the backend's /internal endpoints
 
@@ -22,6 +23,7 @@ export interface InternalError {
   permanent: boolean;
 }
 
+// Only chunks within the relevance cutoff, nearest first
 export interface SearchResponse {
-  docs: string[];
+  docs: ContextChunk[];
 }

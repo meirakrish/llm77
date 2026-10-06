@@ -3,9 +3,9 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
 import { config } from './config';
-import { searchSimilar } from './db';
+import { searchRelevant } from './db';
 import { isClaudeModel, workerHeartbeatKey } from './events';
-import { GenerateEvent, InternalError } from './internal-protocol';
+import { GenerateEvent, InternalError, SearchResponse } from './internal-protocol';
 import { claudeProvider } from './providers/claude';
 import { ollamaProvider } from './providers/ollama';
 import { Provider } from './providers/types';
@@ -103,7 +103,8 @@ export function createInternalRouter(redis: IORedis): Router {
       return;
     }
     try {
-      res.json({ docs: await searchSimilar(query, typeof limit === 'number' ? limit : undefined) });
+      const body: SearchResponse = { docs: await searchRelevant(query, typeof limit === 'number' ? limit : undefined) };
+      res.json(body);
     } catch (error: any) {
       console.error('[internal] Search failed:', error.message);
       sendError(res, 502, `Knowledge base search failed: ${error.message}`, false);

@@ -15,6 +15,12 @@ export const config = {
   llmModel: process.env.LLM_MODEL ?? 'qwen2.5:1.5b',
   embedModel: process.env.EMBED_MODEL ?? 'nomic-embed-text',
   lancedbDir: process.env.LANCEDB_DIR ?? './.lancedb',
+  // Documents are split into chunks of about this many characters, each repeating up to chunkOverlap from the previous one
+  chunkSize: Number(process.env.CHUNK_SIZE ?? 1000),
+  chunkOverlap: Number(process.env.CHUNK_OVERLAP ?? 150),
+  // How many chunks to add to a prompt, and how close (cosine distance, 0 = identical) they must be to count as relevant
+  ragTopK: Number(process.env.RAG_TOP_K ?? 3),
+  ragMaxDistance: Number(process.env.RAG_MAX_DISTANCE ?? 0.45),
   // Comma-separated frontend origins allowed to call the API from a browser, or '*' for any; empty allows none
   corsOrigins: list(process.env.CORS_ORIGINS ?? '').map((o) => o.replace(/\/$/, '')),
   // Shared secret the worker sends to the backend's /internal endpoints; unset disables them

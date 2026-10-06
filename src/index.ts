@@ -1,7 +1,8 @@
 import express, { Request, Response } from 'express';
 import { Queue, DefaultJobOptions } from 'bullmq';
 import IORedis from 'ioredis';
-import { embed, getVectorTable } from './db';
+import { addDocument, deleteDocument, getDocument, isValidDocumentId, listDocuments, searchChunks } from './db';
+import { extractText, UnsupportedFileError } from './extract';
 import crypto from 'crypto';
 import cors from 'cors';
 import { streamChannel, StreamEvent, workerHeartbeatKey, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
@@ -13,7 +14,8 @@ const app = express();
 
 // Let a frontend served from another machine/origin call the API (including the SSE stream)
 app.use(cors({ origin: config.corsOrigins.includes('*') ? true : config.corsOrigins }));
-app.use(express.json());
+// Large enough for pasted documents
+app.use(express.json({ limit: '5mb' }));
 
 // 1. Establish Redis connection and initialize the BullMQ Job Queue
 const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
@@ -196,6 +198,8 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
       data: job.returnvalue?.structuredData ?? job.returnvalue?.text ?? null,
       model: job.returnvalue?.model ?? null,
       metrics: job.returnvalue?.metrics || null, // Structural metrics included here
+      // Knowledge base chunks an answer was grounded in
+      sources: job.returnvalue?.sources ?? null,
       // A retried job keeps the reason from its last failed attempt even after it succeeds
       failedReason: state === 'failed' ? job.failedReason : null
     });
@@ -206,32 +210,139 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
 });
 
 
+// A readable name for pasted text: its first line, shortened
+function titleFrom(text: string): string {
+  const firstLine = text.trim().split('\n')[0].trim();
+  return firstLine.length > 60 ? firstLine.slice(0, 57) + '…' : firstLine || 'Pasted text';
+}
+
+async function storeDocument(res: Response, text: string, source: string): Promise<void> {
+  try {
+    const document = await addDocument(text, source);
+    res.status(201).json({ message: `Document stored as ${document.chunkCount} chunk(s).`, document });
+  } catch (error: any) {
+    console.error('Document store error:', error);
+    res.status(500).json({ error: `Failed to store document: ${error.message}` });
+  }
+}
+
+// Knowledge base documents, newest first
+app.get('/api/documents', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    res.json({ documents: await listDocuments() });
+  } catch (error) {
+    console.error('Document list error:', error);
+    res.status(500).json({ error: 'Failed to list documents.' });
+  }
+});
+
+// Add pasted text; it is split into chunks and each chunk is embedded
+app.post('/api/documents', async (req: Request, res: Response): Promise<void> => {
+  const { text, source } = req.body;
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    res.status(400).json({ error: 'Text content is required.' });
+    return;
+  }
+  if (source !== undefined && typeof source !== 'string') {
+    res.status(400).json({ error: 'source must be a string.' });
+    return;
+  }
+  await storeDocument(res, text, source?.trim() || titleFrom(text));
+});
+
+// Upload a file as the raw request body, e.g. curl --data-binary @notes.pdf '.../upload?filename=notes.pdf'
+app.post(
+  '/api/documents/upload',
+  express.raw({ type: () => true, limit: '20mb' }),
+  async (req: Request, res: Response): Promise<void> => {
+    const filename = req.query.filename;
+    if (!filename || typeof filename !== 'string') {
+      res.status(400).json({ error: 'A filename query parameter is required.' });
+      return;
+    }
+    if (!Buffer.isBuffer(req.body) || !req.body.length) {
+      res.status(400).json({ error: 'The file is empty.' });
+      return;
+    }
+
+    let text: string;
+    try {
+      text = await extractText(filename, req.body);
+    } catch (error: any) {
+      if (error instanceof UnsupportedFileError) {
+        res.status(415).json({ error: error.message });
+      } else {
+        console.error('Text extraction error:', error);
+        res.status(500).json({ error: 'Failed to read the file.' });
+      }
+      return;
+    }
+    if (!text.trim()) {
+      res.status(400).json({ error: 'The file has no text.' });
+      return;
+    }
+    await storeDocument(res, text, filename);
+  }
+);
+
+// Preview what Ask would retrieve: the nearest chunks, each marked with whether it passes the relevance cutoff
+app.post('/api/documents/search', async (req: Request, res: Response): Promise<void> => {
+  const { query } = req.body;
+  if (!query || typeof query !== 'string') {
+    res.status(400).json({ error: 'A query is required.' });
+    return;
+  }
+  try {
+    const results = await searchChunks(query);
+    res.json({
+      maxDistance: config.ragMaxDistance,
+      results: results.map((chunk) => ({ ...chunk, relevant: chunk.distance <= config.ragMaxDistance }))
+    });
+  } catch (error: any) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: `Search failed: ${error.message}` });
+  }
+});
+
+// A document with all its chunks, in order
+app.get('/api/documents/:id', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const document = isValidDocumentId(id) ? await getDocument(id) : null;
+    if (!document) {
+      res.status(404).json({ error: 'Document not found.' });
+      return;
+    }
+    res.json(document);
+  } catch (error) {
+    console.error('Document fetch error:', error);
+    res.status(500).json({ error: 'Failed to look up the document.' });
+  }
+});
+
+app.delete('/api/documents/:id', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  try {
+    if (!isValidDocumentId(id) || !(await deleteDocument(id))) {
+      res.status(404).json({ error: 'Document not found.' });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    console.error('Document delete error:', error);
+    res.status(500).json({ error: 'Failed to delete the document.' });
+  }
+});
+
+// Older alias for POST /api/documents
 app.post('/api/seed', async (req: Request, res: Response): Promise<void> => {
   const { text } = req.body;
 
-  if (!text || typeof text !== 'string') {
+  if (!text || typeof text !== 'string' || !text.trim()) {
     res.status(400).json({ error: 'Text content is required for seeding.' });
     return;
   }
-
-  try {
-    // 1. Generate embedding vector using Ollama
-    const vector = await embed(text);
-
-    const table = await getVectorTable();
-
-    // 2. Insert text along with its corresponding vector array
-    await table.add([{
-      id: crypto.randomUUID(),
-      text: text,
-      vector
-    }]);
-
-    res.status(201).json({ message: 'Document successfully vectorized and stored in LanceDB.' });
-  } catch (error) {
-    console.error('Seeding error:', error);
-    res.status(500).json({ error: 'Failed to seed document.' });
-  }
+  await storeDocument(res, text, titleFrom(text));
 });
 
 app.post('/api/analyze', async (req: Request, res: Response): Promise<void> => {

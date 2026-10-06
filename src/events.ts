@@ -1,9 +1,11 @@
+import type { ContextChunk } from './db';
+
 // Redis pub/sub channel the worker publishes streamed tokens to for a given job
 export const streamChannel = (jobId: string) => `llm-stream:${jobId}`;
 
 export type StreamEvent =
   | { type: 'token'; token: string }
-  | { type: 'done'; text: string; model: string; metrics: Record<string, number> }
+  | { type: 'done'; text: string; model: string; metrics: Record<string, number>; sources: ContextChunk[] }
   | { type: 'error'; message: string };
 
 // Redis key the backend sets while the worker's heartbeats keep arriving

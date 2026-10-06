@@ -12,6 +12,34 @@ export interface Metrics {
   costUsd?: number;
 }
 
+// A knowledge base chunk an answer was grounded in; distance is cosine distance (0 = identical)
+export interface Source {
+  docId: string;
+  source: string;
+  chunkIndex: number;
+  text: string;
+  distance: number;
+}
+
+export interface DocumentSummary {
+  id: string;
+  source: string;
+  createdAt: string;
+  chunkCount: number;
+  charCount: number;
+  // The first chunk's text
+  preview: string;
+}
+
+export interface DocumentDetail extends DocumentSummary {
+  chunks: { index: number; text: string }[];
+}
+
+export interface SearchResult extends Source {
+  // Within the cutoff, so Ask would use it
+  relevant: boolean;
+}
+
 export interface Analysis {
   summary: string;
   category: string;
@@ -34,6 +62,8 @@ export interface Entry {
   // The model that actually produced the result
   model?: string | null;
   metrics?: Metrics | null;
+  // Ask only; unset for entries saved before sources were tracked
+  sources?: Source[] | null;
   error?: string;
 }
 
@@ -86,6 +116,6 @@ export const MODES: Record<Mode, { button: string; badge: string; placeholder: s
     button: 'Add knowledge',
     badge: 'Knowledge',
     placeholder: 'Add a fact or document for Ask to use…',
-    hint: 'Stored in the vector database for future answers.'
+    hint: 'Stored in the vector database for future answers. Upload files and manage it under Knowledge base.'
   }
 };

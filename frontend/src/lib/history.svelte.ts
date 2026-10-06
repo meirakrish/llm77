@@ -88,7 +88,13 @@ class History {
         // Not persisted per token; the final text is saved on 'done'
         entry.text += event.token;
       } else if (event.type === 'done') {
-        this.update(entry, { status: 'done', text: event.text, model: event.model, metrics: event.metrics });
+        this.update(entry, {
+          status: 'done',
+          text: event.text,
+          model: event.model,
+          metrics: event.metrics,
+          sources: event.sources ?? null
+        });
       } else if (event.type === 'error') {
         this.update(entry, { status: 'error', error: event.message });
       }
@@ -104,8 +110,8 @@ class History {
   }
 
   private async runSeed(entry: Entry) {
-    await api.seed(entry.input);
-    this.update(entry, { status: 'done' });
+    const document = await api.addDocument(entry.input);
+    this.update(entry, { status: 'done', text: `Added to the knowledge base as ${document.chunkCount} chunk(s).` });
   }
 
   // Poll a queued job until it settles; used for analysis and to resume jobs after a reload
@@ -119,7 +125,8 @@ class History {
           return;
         }
         if (job.status === 'completed') {
-          const result = entry.mode === 'analyze' ? { data: job.data as Analysis } : { text: job.data as string };
+          const result =
+            entry.mode === 'analyze' ? { data: job.data as Analysis } : { text: job.data as string, sources: job.sources ?? null };
           this.update(entry, { status: 'done', model: job.model, metrics: job.metrics, ...result });
           return;
         }

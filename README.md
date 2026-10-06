@@ -39,7 +39,7 @@ The worker never contacts Ollama, Anthropic or LanceDB itself: it asks the backe
 *   **Asynchronous Processing (Decoupling):** Leverages **BullMQ and Redis** to separate the fast HTTP intake layer from heavy AI processing. This guarantees the backend stays responsive under heavy load.
 *   **VRAM & Contention Safeguards:** Enforces a strict `concurrency: 1` pipeline execution flow on the background worker to protect local host GPU resources and prevent Out-of-Memory (`cudaMalloc`) crashes.
 *   **Token & Streaming Pipelines:** Implements a baseline **Server-Sent Events (SSE)** token execution structure using native JavaScript Async Generators.
-*   **Embedded Local RAG Store:** Integrates **LanceDB** as an in-process vector table to manage semantic knowledge bases using localized text embeddings (`nomic-embed-text`).
+*   **Embedded Local RAG Store:** Integrates **LanceDB** as an in-process vector table to manage semantic knowledge bases using localized text embeddings (`nomic-embed-text`). Documents (pasted text or `.txt`/`.md`/`.csv`/`.log`/`.pdf` files) are split into overlapping chunks; only chunks within a relevance cutoff reach the prompt, and every answer lists the sources it used.
 *   **Deterministic Structured Outputs:** Utilizes **Zod** schema constraints alongside Ollama's structural JSON grammar layer to guarantee text transformations exactly match valid backend schemas.
 *   **Performance Observability Matrix:** Captures queue latency delays, prompt/completion token consumption volumes, overall execution time, and raw throughput speeds (tokens per second).
 
@@ -87,7 +87,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions (streamed), analyzing messages and adding knowledge. Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions (streamed, with the knowledge base sources each answer used), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -120,6 +120,10 @@ The API and worker read their settings from environment variables; the defaults 
 | `LLM_MODEL` | `qwen2.5:1.5b` | Backend only: default generation model |
 | `EMBED_MODEL` | `nomic-embed-text` | Backend only: embedding model (the vector table assumes 768 dimensions) |
 | `LANCEDB_DIR` | `./.lancedb` | Backend only: LanceDB storage directory |
+| `CHUNK_SIZE` | `1000` | Backend only: target characters per knowledge base chunk (applies to newly added documents) |
+| `CHUNK_OVERLAP` | `150` | Backend only: characters each chunk repeats from the previous one |
+| `RAG_TOP_K` | `3` | Backend only: most chunks added to an Ask prompt |
+| `RAG_MAX_DISTANCE` | `0.45` | Backend only: cosine distance cutoff (0 = identical); farther chunks are left out of the prompt. Use the frontend's *Test retrieval* to tune it |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
 | `ANTHROPIC_API_KEY` | *(none)* | Backend only: enables Claude models (an `ant auth login` profile also works) |
 | `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Backend only: Claude models users may pick |
@@ -140,18 +144,31 @@ Queued jobs retry up to 3 times with exponential backoff, except streams and sch
 `POST /api/stream`, `/api/jobs` and `/api/analyze` accept an optional `"model"` (one listed by `GET /api/models`); without it, the worker's `LLM_MODEL` is used.
 
 ### 1. Base Stream Endpoint (Milestone 1 Testing)
-Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`) or `error` (`message`).
+Queues a RAG-grounded generation job and streams its tokens back to the client using Server-Sent Events (SSE). Generation still runs on the worker, so the `concurrency: 1` safeguard applies. Events: `queued` (`jobId`), `token` (`token`), then `done` (`text`, `metrics`, `sources`) or `error` (`message`). `sources` lists the knowledge base chunks the answer was grounded in (empty when nothing was relevant enough).
 ```bash
 curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"prompt": "Write a short 3 sentence poem about backend engineering."}'
 ```
 
 To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4).
 
-### 2. Seed RAG Knowledge Base
-Injects domain-specific background context into the local LanceDB vector index.
+### 2. Manage the RAG Knowledge Base
+Documents are split into overlapping chunks (`CHUNK_SIZE`/`CHUNK_OVERLAP`) and each chunk is embedded into the local LanceDB index. Ask uses at most `RAG_TOP_K` chunks, and only those within `RAG_MAX_DISTANCE` of the question, so unrelated questions get no context.
 ```bash
-curl -X POST http://localhost:3000/api/seed   -H "Content-Type: application/json"   -d '{"text": "Project Aethelgard is a confidential database backend built by Alex using Node.js and LanceDB in October 2026."}'
+# Add pasted text ("source" is optional and defaults to the first line)
+curl -X POST http://localhost:3000/api/documents   -H "Content-Type: application/json"   -d '{"source": "Aethelgard notes", "text": "Project Aethelgard is a confidential database backend built by Alex using Node.js and LanceDB in October 2026."}'
+
+# Upload a file as the raw body (.txt, .md, .markdown, .csv, .log or .pdf, up to 20 MB)
+curl -X POST --data-binary @handbook.pdf "http://localhost:3000/api/documents/upload?filename=handbook.pdf"
+
+# List documents, view one's chunks, delete one
+curl http://localhost:3000/api/documents
+curl http://localhost:3000/api/documents/<documentId>
+curl -X DELETE http://localhost:3000/api/documents/<documentId>
+
+# See which chunks a question would retrieve, with distances and whether each passes the cutoff
+curl -X POST http://localhost:3000/api/documents/search   -H "Content-Type: application/json"   -d '{"query": "Who built Aethelgard?"}'
 ```
+`POST /api/seed` (`{"text": ...}`) still works as an alias for adding pasted text. Knowledge bases from older versions are migrated on first start: each old document becomes a single chunk, keeping its embedding.
 
 ### 3. Queue Structured Analysis Tasks
 Submits a messy log text message to the job queue for type-safe parameter extraction. Returns an asynchronous `jobId`.
@@ -179,6 +196,7 @@ curl http://localhost:3000/api/jobs/<jobId>
       "Review the recent codebase deployment logs."
     ]
   },
+  "model": "qwen2.5:1.5b",
   "metrics": {
     "queueWaitTimeMs": 14,
     "executionTimeMs": 1148,
@@ -187,6 +205,7 @@ curl http://localhost:3000/api/jobs/<jobId>
     "totalTokens": 170,
     "tokensPerSecond": 45.29
   },
+  "sources": null,
   "failedReason": null
 }
 ```
@@ -204,13 +223,15 @@ curl http://localhost:3000/api/info
 ├── package.json          # Dependencies & development scripts
 ├── frontend              # Standalone Svelte + Vite web UI (own package.json)
 │   └── src
-│       ├── App.svelte    # Page layout, composer & history list
+│       ├── App.svelte    # Page layout: Workbench (composer & history) and Knowledge base tabs
 │       └── lib           # Components, API client, persisted history store
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
+    ├── chunking.ts       # Splits documents into overlapping chunks
     ├── config.ts         # Environment-driven settings
-    ├── db.ts             # LanceDB connection mapping layers (backend only)
+    ├── db.ts             # Backend: LanceDB knowledge base (documents, chunks, relevance search)
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
+    ├── extract.ts        # Backend: text extraction from uploaded files (incl. PDF)
     ├── index.ts          # Express Server API interface definitions
     ├── internal-api.ts   # Backend: token-protected /internal endpoints the worker calls
     ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints

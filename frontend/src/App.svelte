@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import HistoryEntry from './lib/HistoryEntry.svelte';
+  import Knowledge from './lib/Knowledge.svelte';
   import ModelInfo from './lib/ModelInfo.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
   import { history } from './lib/history.svelte';
@@ -9,7 +10,18 @@
   let mode = $state<Mode>('ask');
   let input = $state('');
   let model = $state('');
-  let textarea: HTMLTextAreaElement;
+  let textarea = $state<HTMLTextAreaElement>();
+
+  // The open tab lives in the URL hash so reloads and links keep it
+  type View = 'workbench' | 'knowledge';
+  const viewFromHash = (): View => (location.hash === '#knowledge' ? 'knowledge' : 'workbench');
+  let view = $state<View>(viewFromHash());
+
+  function showView(next: View) {
+    view = next;
+    // window.history: the imported `history` is the query history
+    window.history.replaceState(null, '', next === 'knowledge' ? '#knowledge' : location.pathname + location.search);
+  }
 
   onMount(() => history.resumeInterrupted());
 
@@ -30,7 +42,7 @@
   async function selectMode(next: Mode) {
     mode = next;
     await tick();
-    textarea.focus();
+    textarea?.focus();
   }
 
   async function reuse(entry: Entry) {
@@ -39,7 +51,7 @@
     // The picker drops it again if that model is no longer offered
     if (entry.mode !== 'seed') model = entry.requestedModel ?? '';
     await tick();
-    textarea.focus();
+    textarea?.focus();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -53,50 +65,73 @@
   <p class="sub">Queries run through the local queue and worker. History is saved in this browser.</p>
   <ModelInfo />
 
-  <form class="composer" id="composer" onsubmit={submit}>
-    <div class="modes" role="group" aria-label="Mode">
-      {#each Object.entries(MODES) as [key, m] (key)}
-        <button type="button" data-mode={key} aria-pressed={mode === key} onclick={() => selectMode(key as Mode)}>
-          {m.button}
-        </button>
+  <nav class="tabs" aria-label="Sections">
+    <button type="button" aria-current={view === 'workbench' ? 'page' : undefined} onclick={() => showView('workbench')}>
+      Workbench
+    </button>
+    <button type="button" aria-current={view === 'knowledge' ? 'page' : undefined} onclick={() => showView('knowledge')}>
+      Knowledge base
+    </button>
+  </nav>
+
+  {#if view === 'knowledge'}
+    <Knowledge />
+  {:else}
+    <form class="composer" id="composer" onsubmit={submit}>
+      <div class="modes" role="group" aria-label="Mode">
+        {#each Object.entries(MODES) as [key, m] (key)}
+          <button type="button" data-mode={key} aria-pressed={mode === key} onclick={() => selectMode(key as Mode)}>
+            {m.button}
+          </button>
+        {/each}
+      </div>
+      {#if mode !== 'seed'}
+        <ModelPicker bind:value={model} />
+      {/if}
+      <textarea
+        id="input"
+        required
+        bind:this={textarea}
+        bind:value={input}
+        placeholder={MODES[mode].placeholder}
+        onkeydown={onKeydown}
+      ></textarea>
+      <div class="row">
+        <span class="hint">{MODES[mode].hint} Ctrl+Enter to run.</span>
+        <button class="primary" type="submit">Run</button>
+      </div>
+    </form>
+
+    <div class="history-head">
+      <h2>History</h2>
+      {#if history.entries.length}
+        <button class="link danger" id="clear" type="button" onclick={clearAll}>Clear all</button>
+      {/if}
+    </div>
+    <div id="history">
+      {#each history.entries as entry (entry.id)}
+        <HistoryEntry {entry} onreuse={() => reuse(entry)} ondelete={() => history.remove(entry.id)} />
+      {:else}
+        <p class="empty">Nothing yet. Run a query to start your history.</p>
       {/each}
     </div>
-    {#if mode !== 'seed'}
-      <ModelPicker bind:value={model} />
-    {/if}
-    <textarea
-      id="input"
-      required
-      bind:this={textarea}
-      bind:value={input}
-      placeholder={MODES[mode].placeholder}
-      onkeydown={onKeydown}
-    ></textarea>
-    <div class="row">
-      <span class="hint">{MODES[mode].hint} Ctrl+Enter to run.</span>
-      <button class="primary" type="submit">Run</button>
-    </div>
-  </form>
-
-  <div class="history-head">
-    <h2>History</h2>
-    {#if history.entries.length}
-      <button class="link danger" id="clear" type="button" onclick={clearAll}>Clear all</button>
-    {/if}
-  </div>
-  <div id="history">
-    {#each history.entries as entry (entry.id)}
-      <HistoryEntry {entry} onreuse={() => reuse(entry)} ondelete={() => history.remove(entry.id)} />
-    {:else}
-      <p class="empty">Nothing yet. Run a query to start your history.</p>
-    {/each}
-  </div>
+  {/if}
 </main>
+
+<svelte:window onhashchange={() => (view = viewFromHash())} />
 
 <style>
   main { max-width: 780px; margin: 0 auto; padding: 32px 16px 64px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+
+  .tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+  .tabs button {
+    border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; font-weight: 600;
+    padding: 8px 0; margin-bottom: -1px; border-bottom: 2px solid transparent; cursor: pointer;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 
   .composer {
     background: var(--surface);
