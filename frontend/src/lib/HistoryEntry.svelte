@@ -1,13 +1,13 @@
 <script lang="ts">
   import { formatCost } from './format';
-  import { MODES, type Entry } from './types';
+  import { BADGES, type Entry } from './types';
 
   let { entry, onreuse, ondelete }: { entry: Entry; onreuse: () => void; ondelete: () => void } = $props();
 </script>
 
 <article class="entry" id="e-{entry.id}">
   <div class="entry-head">
-    <span class="badge">{MODES[entry.mode].badge}</span>
+    <span class="badge">{BADGES[entry.mode]}</span>
     <time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>
     {#if entry.model ?? entry.requestedModel}
       <span class="model">{entry.model ?? entry.requestedModel}</span>

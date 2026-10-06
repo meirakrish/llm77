@@ -1,5 +1,5 @@
 import * as api from './api';
-import type { Analysis, Entry, Mode } from './types';
+import type { Analysis, Entry, RunMode } from './types';
 
 const STORE_KEY = 'llm77.history.v1';
 
@@ -26,13 +26,12 @@ class History {
     return this.entries.some((e) => e.id === entry.id);
   }
 
-  add(mode: Mode, input: string, requestedModel?: string) {
+  add(mode: RunMode, input: string, requestedModel?: string) {
     this.entries.unshift({
       id: crypto.randomUUID(),
       mode,
       input,
-      // Knowledge is embedded locally, so no model choice applies
-      ...(requestedModel && mode !== 'seed' ? { requestedModel } : {}),
+      ...(requestedModel ? { requestedModel } : {}),
       createdAt: new Date().toISOString(),
       status: 'pending',
       text: ''
@@ -73,8 +72,7 @@ class History {
   private async run(entry: Entry) {
     try {
       if (entry.mode === 'ask') await this.runAsk(entry);
-      else if (entry.mode === 'analyze') await this.runAnalyze(entry);
-      else await this.runSeed(entry);
+      else await this.runAnalyze(entry);
     } catch (error) {
       this.update(entry, { status: 'error', error: (error as Error).message });
     }
@@ -107,11 +105,6 @@ class History {
   private async runAnalyze(entry: Entry) {
     this.update(entry, { jobId: await api.queueAnalysis(entry.input, entry.requestedModel) });
     await this.poll(entry);
-  }
-
-  private async runSeed(entry: Entry) {
-    const document = await api.addDocument(entry.input);
-    this.update(entry, { status: 'done', text: `Added to the knowledge base as ${document.chunkCount} chunk(s).` });
   }
 
   // Poll a queued job until it settles; used for analysis and to resume jobs after a reload

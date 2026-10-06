@@ -5,12 +5,14 @@
   import ModelInfo from './lib/ModelInfo.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
   import { history } from './lib/history.svelte';
-  import { MODES, type Entry, type Mode } from './lib/types';
+  import { MODES, type Entry, type RunMode } from './lib/types';
 
-  let mode = $state<Mode>('ask');
+  let mode = $state<RunMode>('ask');
   let input = $state('');
   let model = $state('');
   let textarea = $state<HTMLTextAreaElement>();
+  // Unsaved text in the Knowledge base tab's editor, kept across tab switches
+  let knowledgeDraft = $state('');
 
   // The open tab lives in the URL hash so reloads and links keep it
   type View = 'workbench' | 'knowledge';
@@ -39,20 +41,26 @@
     }
   }
 
-  async function selectMode(next: Mode) {
+  async function selectMode(next: RunMode) {
     mode = next;
     await tick();
     textarea?.focus();
   }
 
   async function reuse(entry: Entry) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Knowledge entries from the former Add knowledge mode reopen in the Knowledge base tab
+    if (entry.mode === 'seed') {
+      knowledgeDraft = entry.input;
+      showView('knowledge');
+      return;
+    }
     mode = entry.mode;
     input = entry.input;
     // The picker drops it again if that model is no longer offered
-    if (entry.mode !== 'seed') model = entry.requestedModel ?? '';
+    model = entry.requestedModel ?? '';
     await tick();
     textarea?.focus();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   function clearAll() {
@@ -75,19 +83,17 @@
   </nav>
 
   {#if view === 'knowledge'}
-    <Knowledge />
+    <Knowledge bind:draft={knowledgeDraft} />
   {:else}
     <form class="composer" id="composer" onsubmit={submit}>
       <div class="modes" role="group" aria-label="Mode">
         {#each Object.entries(MODES) as [key, m] (key)}
-          <button type="button" data-mode={key} aria-pressed={mode === key} onclick={() => selectMode(key as Mode)}>
+          <button type="button" data-mode={key} aria-pressed={mode === key} onclick={() => selectMode(key as RunMode)}>
             {m.button}
           </button>
         {/each}
       </div>
-      {#if mode !== 'seed'}
-        <ModelPicker bind:value={model} />
-      {/if}
+      <ModelPicker bind:value={model} />
       <textarea
         id="input"
         required
@@ -97,7 +103,13 @@
         onkeydown={onKeydown}
       ></textarea>
       <div class="row">
-        <span class="hint">{MODES[mode].hint} Ctrl+Enter to run.</span>
+        <span class="hint">
+          {MODES[mode].hint}
+          {#if mode === 'ask'}
+            <button class="link inline" type="button" onclick={() => showView('knowledge')}>Manage the knowledge base</button>.
+          {/if}
+          Ctrl+Enter to run.
+        </span>
         <button class="primary" type="submit">Run</button>
       </div>
     </form>
@@ -152,7 +164,9 @@
   }
   textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-  .hint { color: var(--muted); font-size: 13px; }
+  .hint { color: var(--muted); font-size: 13px; flex: 1 1 280px; }
+  .link.inline { color: var(--accent); padding: 0; }
+  .link.inline:hover { text-decoration: underline; color: var(--accent); }
   .primary {
     border: 0; background: var(--accent); color: var(--accent-text);
     padding: 8px 16px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer;

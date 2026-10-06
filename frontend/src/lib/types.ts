@@ -1,4 +1,7 @@
+// 'seed' entries come from the Workbench's former Add knowledge mode; they still show in saved history
 export type Mode = 'ask' | 'analyze' | 'seed';
+// Modes the Workbench can run; knowledge is added in the Knowledge base tab
+export type RunMode = Exclude<Mode, 'seed'>;
 export type Status = 'pending' | 'streaming' | 'done' | 'error';
 
 export interface Metrics {
@@ -99,23 +102,17 @@ export interface ApiInfo {
   error?: string;
 }
 
-export const MODES: Record<Mode, { button: string; badge: string; placeholder: string; hint: string }> = {
+export const BADGES: Record<Mode, string> = { ask: 'Ask', analyze: 'Analyze', seed: 'Knowledge' };
+
+export const MODES: Record<RunMode, { button: string; placeholder: string; hint: string }> = {
   ask: {
     button: 'Ask',
-    badge: 'Ask',
     placeholder: 'Ask a question…',
     hint: 'Answers stream in, grounded in your knowledge base.'
   },
   analyze: {
     button: 'Analyze',
-    badge: 'Analyze',
     placeholder: 'Paste a message or log to classify…',
     hint: 'Returns summary, category, urgency and action items.'
-  },
-  seed: {
-    button: 'Add knowledge',
-    badge: 'Knowledge',
-    placeholder: 'Add a fact or document for Ask to use…',
-    hint: 'Stored in the vector database for future answers. Upload files and manage it under Knowledge base.'
   }
 };

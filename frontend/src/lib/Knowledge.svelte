@@ -3,6 +3,9 @@
   import * as api from './api';
   import type { DocumentDetail, DocumentSummary, SearchResult } from './types';
 
+  // Text in the paste editor; bindable so the parent can prefill it and keep it across tab switches
+  let { draft: text = $bindable('') }: { draft?: string } = $props();
+
   // Mirrors the backend's supported upload types
   const ACCEPT = '.txt,.md,.markdown,.csv,.log,.pdf';
 
@@ -18,7 +21,6 @@
   let loading = $state(true);
   let loadError = $state('');
 
-  let text = $state('');
   let title = $state('');
   let adding = $state(false);
   let addError = $state('');
