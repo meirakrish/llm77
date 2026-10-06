@@ -1,7 +1,7 @@
 import { UnrecoverableError } from 'bullmq';
 import { config } from './config';
 import type { AnalyzeResponse, GenerateEvent, InternalError, SearchResponse } from './internal-protocol';
-import type { TextResult } from './providers/types';
+import type { ChatMessage, TextResult } from './providers/types';
 import type { ContextChunk } from './db';
 
 // The worker's only route to models and the knowledge base: the backend's token-protected /internal API
@@ -27,8 +27,12 @@ async function call(method: string, path: string, body?: unknown): Promise<Respo
 }
 
 // Run a generation on the backend, receiving tokens as they are produced
-export async function generate(model: string, prompt: string, onToken: (token: string) => Promise<void>): Promise<TextResult> {
-  const res = await call('POST', '/generate', { model, prompt });
+export async function generate(
+  model: string,
+  messages: ChatMessage[],
+  onToken: (token: string) => Promise<void>
+): Promise<TextResult> {
+  const res = await call('POST', '/generate', { model, messages });
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
 

@@ -3,6 +3,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { UnrecoverableError } from 'bullmq';
 import IORedis from 'ioredis';
 import { config } from './config';
+import { parseMessages } from './chat';
 import { searchRelevant } from './db';
 import { isClaudeModel, workerHeartbeatKey } from './events';
 import { GenerateEvent, InternalError, SearchResponse } from './internal-protocol';
@@ -53,10 +54,13 @@ export function createInternalRouter(redis: IORedis): Router {
 
   // Stream generated tokens back as newline-delimited JSON
   router.post('/generate', async (req: Request, res: Response): Promise<void> => {
-    const { prompt } = req.body;
     const model: string = req.body.model ?? config.llmModel;
-    if (typeof prompt !== 'string' || typeof model !== 'string') {
-      sendError(res, 400, 'prompt and model must be strings.', true);
+    // Workers from before conversations send a single prompt
+    const messages = typeof req.body.prompt === 'string'
+      ? [{ role: 'user' as const, content: req.body.prompt }]
+      : parseMessages(req.body.messages);
+    if ('error' in messages || typeof model !== 'string') {
+      sendError(res, 400, 'error' in messages ? messages.error : 'model must be a string.', true);
       return;
     }
 
@@ -65,7 +69,7 @@ export function createInternalRouter(redis: IORedis): Router {
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
 
     try {
-      const result = await providerFor(model).streamText(model, prompt, async (token) => {
+      const result = await providerFor(model).streamText(model, messages, async (token) => {
         write({ type: 'token', token });
       }, signal);
       write({ type: 'done', ...result });

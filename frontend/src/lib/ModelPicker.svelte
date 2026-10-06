@@ -1,42 +1,24 @@
 <script lang="ts">
-  import { getModels } from './api';
-  import type { ModelOption } from './types';
+  import { models, priceLabel } from './models.svelte';
 
   // '' means "the worker's default local model"
   let { value = $bindable('') }: { value?: string } = $props();
 
   const STORE_KEY = 'llm77.model';
-  let models = $state<ModelOption[]>([]);
-  let defaultModel = $state<string | null>(null);
-  let status = $state<'loading' | 'ready' | 'unreachable'>('loading');
-
-  const local = $derived(models.filter((m) => m.provider === 'ollama'));
-  const claude = $derived(models.filter((m) => m.provider === 'claude'));
-  const selected = $derived(models.find((m) => m.id === value));
+  const local = $derived(models.list.filter((m) => m.provider === 'ollama'));
+  const claude = $derived(models.list.filter((m) => m.provider === 'claude'));
+  const selected = $derived(models.list.find((m) => m.id === value));
+  const status = $derived(models.status);
 
   try {
     value = localStorage.getItem(STORE_KEY) ?? '';
   } catch {}
 
-  async function refresh() {
-    try {
-      const res = await getModels();
-      models = res.models;
-      defaultModel = res.defaultModel;
-      // The backend lists models even while the worker is down; queued jobs wait for it
-      status = 'ready';
-      // Drop a saved choice that is no longer offered (model removed, Claude credentials gone);
-      // an empty list means the backend couldn't reach Ollama, so keep the choice until it can
-      if (value && models.length && !models.some((m) => m.id === value)) value = '';
-    } catch {
-      status = 'unreachable';
-    }
-  }
+  $effect(() => models.subscribe());
 
+  // Drop a saved choice that is no longer offered (model removed, Claude credentials gone)
   $effect(() => {
-    refresh();
-    const timer = setInterval(refresh, 30000);
-    return () => clearInterval(timer);
+    if (status === 'ready' && value && !models.isOffered(value)) value = '';
   });
 
   $effect(() => {
@@ -45,14 +27,14 @@
     } catch {}
   });
 
-  const price = (m: ModelOption) => (m.inputPrice !== undefined ? ` — $${m.inputPrice} / $${m.outputPrice} per 1M tokens` : '');
+  const price = (m: (typeof models.list)[number]) => (priceLabel(m) ? ` — ${priceLabel(m)}` : '');
 </script>
 
 <label class="picker">
   <span class="label">Model</span>
   <select id="model" bind:value disabled={status !== 'ready'}>
     {#if status === 'ready'}
-      <option value="">Default{defaultModel ? ` (${defaultModel})` : ''}</option>
+      <option value="">Default{models.defaultModel ? ` (${models.defaultModel})` : ''}</option>
       {#if local.length}
         <optgroup label="Local (Ollama)">
           {#each local as m (m.id)}<option value={m.id}>{m.name}</option>{/each}

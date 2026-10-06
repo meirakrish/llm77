@@ -7,6 +7,8 @@ import crypto from 'crypto';
 import cors from 'cors';
 import { streamChannel, StreamEvent, workerHeartbeatKey, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
 import { config } from './config';
+import { parseMessages } from './chat';
+import type { ChatMessage } from './providers/types';
 import { getModelsInfo } from './model-info';
 import { createInternalRouter } from './internal-api';
 
@@ -54,14 +56,21 @@ async function resolveTarget(model: unknown): Promise<Target> {
   return { model, queue: llmQueue };
 }
 
+// A generation request carries either a single prompt or a whole conversation (messages)
+function conversationFrom(body: any): ChatMessage[] | { error: string } {
+  if (body.messages !== undefined) return parseMessages(body.messages);
+  if (!body.prompt || typeof body.prompt !== 'string') return { error: 'A text prompt (or a messages array) is required.' };
+  return [{ role: 'user', content: body.prompt }];
+}
+
 const queueForJob = (jobId: string) => (jobId.startsWith(CLOUD_JOB_PREFIX) ? cloudQueue : llmQueue);
 
 // Endpoint to submit an LLM task
 app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
-  const { prompt, model } = req.body;
-
-  if (!prompt || typeof prompt !== 'string') {
-    res.status(400).json({ error: 'A text prompt is required.' });
+  const { model } = req.body;
+  const messages = conversationFrom(req.body);
+  if ('error' in messages) {
+    res.status(400).json({ error: messages.error });
     return;
   }
 
@@ -74,7 +83,7 @@ app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
 
     // 2. Add the prompt task to the model's queue.
     // BullMQ assigns local jobs a unique ID automatically; cloud jobs carry a prefixed one.
-    const job = await target.queue.add('generate-text', { prompt, model: target.model }, { jobId: target.jobId });
+    const job = await target.queue.add('generate-text', { messages, model: target.model }, { jobId: target.jobId });
 
     // 3. Immediately respond with a 202 Accepted status and the identifier
     res.status(202).json({
@@ -90,10 +99,10 @@ app.post('/api/jobs', async (req: Request, res: Response): Promise<void> => {
 
 // Endpoint to queue a generation task and stream its tokens back via Server-Sent Events
 app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
-  const { prompt, model } = req.body;
-
-  if (!prompt || typeof prompt !== 'string') {
-    res.status(400).json({ error: 'A text prompt is required.' });
+  const { model } = req.body;
+  const messages = conversationFrom(req.body);
+  if ('error' in messages) {
+    res.status(400).json({ error: messages.error });
     return;
   }
 
@@ -121,7 +130,7 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
     await subscriber.subscribe(streamChannel(jobId));
     // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to local streams too
     // No retries: the client has already received the error event and would see tokens replayed
-    await target.queue.add('generate-text', { prompt, model: target.model, stream: true }, { jobId, attempts: 1 });
+    await target.queue.add('generate-text', { messages, model: target.model, stream: true }, { jobId, attempts: 1 });
   } catch (error) {
     cleanup();
     console.error('Stream queue error:', error);
