@@ -88,7 +88,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) and Claude cost for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -125,6 +125,7 @@ The API and worker read their settings from environment variables; the defaults 
 | `CHUNK_OVERLAP` | `150` | Backend only: characters each chunk repeats from the previous one |
 | `RAG_TOP_K` | `3` | Backend only: most chunks added to an Ask prompt |
 | `RAG_MAX_DISTANCE` | `0.45` | Backend only: cosine distance cutoff (0 = identical); farther chunks are left out of the prompt. Use the frontend's *Test retrieval* to tune it |
+| `METRICS_RETENTION_DAYS` | `30` | How long finished-job records are kept for the stats dashboard |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
 | `ANTHROPIC_API_KEY` | *(none)* | Backend only: enables Claude models (an `ant auth login` profile also works) |
 | `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Backend only: Claude models users may pick |
@@ -233,6 +234,12 @@ curl http://localhost:3000/api/jobs/<jobId>
 curl http://localhost:3000/api/info
 ```
 
+### 6. Usage Stats
+Every finished job (completed, failed after its last retry, or cancelled) is recorded in a Redis Stream and kept for `METRICS_RETENTION_DAYS`, independently of BullMQ's own job history (which keeps completed jobs for a day). `GET /api/stats?range=24h|7d|30d` summarizes them: totals, a per-model breakdown (jobs by outcome, median tokens per second, median and p95 run and queue times, tokens, cost) and a timeline of jobs per period. Speed and timing figures come from completed jobs only.
+```bash
+curl "http://localhost:3000/api/stats?range=7d"
+```
+
 ## 📁 Project Directory Layout
 
 ```text
@@ -255,6 +262,7 @@ curl http://localhost:3000/api/info
     ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints
     ├── internal-protocol.ts # Request/response types shared by both sides of /internal
     ├── job-stream.ts     # Backend: replays and follows a job's events as SSE, with queue position
+    ├── metrics.ts        # Per-job records and the stats summary
     ├── model-info.ts     # Backend: model discovery (Ollama models, Claude availability)
     ├── ollama-client.ts  # Backend: Ollama client
     ├── providers         # Backend: Ollama and Claude implementations of text generation & analysis

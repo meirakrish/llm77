@@ -21,6 +21,8 @@ export const config = {
   // How many chunks to add to a prompt, and how close (cosine distance, 0 = identical) they must be to count as relevant
   ragTopK: Number(process.env.RAG_TOP_K ?? 3),
   ragMaxDistance: Number(process.env.RAG_MAX_DISTANCE ?? 0.45),
+  // How long finished-job records are kept for the stats dashboard
+  metricsRetentionDays: Number(process.env.METRICS_RETENTION_DAYS ?? 30),
   // Comma-separated frontend origins allowed to call the API from a browser, or '*' for any; empty allows none
   corsOrigins: list(process.env.CORS_ORIGINS ?? '').map((o) => o.replace(/\/$/, '')),
   // Shared secret the worker sends to the backend's /internal endpoints; unset disables them

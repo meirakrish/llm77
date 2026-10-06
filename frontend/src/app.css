@@ -11,6 +11,11 @@
   --ok: #2e7d4f;
   --warn: #b7791f;
   --radius: 10px;
+  /* Chart marks: outcome colors validated as a set (lightness, chroma, colorblind separation, contrast) per mode */
+  --chart-completed: #2a78d6;
+  --chart-failed: #e34948;
+  --chart-cancelled: #4a3aa7;
+  --chart-grid: #e8e8e3;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -26,6 +31,10 @@
     --danger: #f0786a;
     --ok: #6cc28f;
     --warn: #e8b45a;
+    --chart-completed: #3987e5;
+    --chart-failed: #e66767;
+    --chart-cancelled: #9085e9;
+    --chart-grid: #2c2c2a;
     color-scheme: dark;
   }
 }

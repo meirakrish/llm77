@@ -163,3 +163,45 @@ export const MODES: Record<RunMode, { button: string; placeholder: string; hint:
     hint: 'Returns summary, category, urgency and action items.'
   }
 };
+
+export type StatsRange = '24h' | '7d' | '30d';
+
+interface OutcomeCounts {
+  jobs: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+}
+
+// Figures from completed jobs; null when there were none
+interface Performance {
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  medianTokensPerSecond: number | null;
+  p50ExecutionMs: number | null;
+  p95ExecutionMs: number | null;
+  p50QueueWaitMs: number | null;
+  p95QueueWaitMs: number | null;
+}
+
+export interface ModelStats extends OutcomeCounts, Performance {
+  model: string;
+  provider: 'ollama' | 'claude';
+}
+
+export interface StatsBucket extends OutcomeCounts {
+  start: string;
+  completionTokens: number;
+}
+
+export interface Stats {
+  range: StatsRange;
+  from: string;
+  to: string;
+  bucketMs: number;
+  retentionDays: number;
+  totals: OutcomeCounts & Performance;
+  models: ModelStats[];
+  timeline: StatsBucket[];
+}
