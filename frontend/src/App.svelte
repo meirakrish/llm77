@@ -5,6 +5,7 @@
   import ModelInfo from './lib/ModelInfo.svelte';
   import ModelChecklist from './lib/ModelChecklist.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
+  import Stats from './lib/Stats.svelte';
   import { history } from './lib/history.svelte';
   import { MODES, type Entry, type JobEntry, type RunMode } from './lib/types';
 
@@ -18,14 +19,14 @@
   let knowledgeDraft = $state('');
 
   // The open tab lives in the URL hash so reloads and links keep it
-  type View = 'workbench' | 'knowledge';
-  const viewFromHash = (): View => (location.hash === '#knowledge' ? 'knowledge' : 'workbench');
+  type View = 'workbench' | 'knowledge' | 'stats';
+  const viewFromHash = (): View => (location.hash === '#knowledge' ? 'knowledge' : location.hash === '#stats' ? 'stats' : 'workbench');
   let view = $state<View>(viewFromHash());
 
   function showView(next: View) {
     view = next;
     // window.history: the imported `history` is the query history
-    window.history.replaceState(null, '', next === 'knowledge' ? '#knowledge' : location.pathname + location.search);
+    window.history.replaceState(null, '', next === 'workbench' ? location.pathname + location.search : `#${next}`);
   }
 
   onMount(() => history.resumeInterrupted());
@@ -86,10 +87,15 @@
     <button type="button" aria-current={view === 'knowledge' ? 'page' : undefined} onclick={() => showView('knowledge')}>
       Knowledge base
     </button>
+    <button type="button" aria-current={view === 'stats' ? 'page' : undefined} onclick={() => showView('stats')}>
+      Stats
+    </button>
   </nav>
 
   {#if view === 'knowledge'}
     <Knowledge bind:draft={knowledgeDraft} />
+  {:else if view === 'stats'}
+    <Stats />
   {:else}
     <form class="composer" id="composer" onsubmit={submit}>
       <div class="modes" role="group" aria-label="Mode">

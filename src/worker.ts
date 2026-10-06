@@ -5,6 +5,7 @@ import { config } from './config';
 import * as backend from './internal-client';
 import type { ChatMessage, Usage } from './providers/types';
 import { retrievalQuery, withContext } from './chat';
+import { kindOf, recordJobSafely } from './metrics';
 
 // Models and the knowledge base are reached only through the backend, which needs the shared token
 if (!config.internalToken) {
@@ -95,23 +96,53 @@ async function processJob(job: Job, _token?: string, signal?: AbortSignal) {
   const model: string | undefined = job.data.model;
   console.log(`[Job ${job.id}] Picked up after waiting ${queueWaitTimeMs}ms in queue (${model ?? 'default model'}).`);
 
+  const startTime = Date.now();
+  const kind = kindOf(job.name);
   try {
     // Cancelled before this worker could hear about it
     if (await publisher.exists(cancelKey(job.id!))) throw new UnrecoverableError(CANCELLED_MESSAGE);
+    let result;
     switch (job.name) {
       case 'generate-text':
-        return await generateText(job, model!, queueWaitTimeMs, signal);
+        result = await generateText(job, model!, queueWaitTimeMs, signal);
+        break;
       case 'analyze-text':
-        return await analyzeText(job, model!, queueWaitTimeMs, signal);
+        result = await analyzeText(job, model!, queueWaitTimeMs, signal);
+        break;
       default:
         throw new UnrecoverableError(`Unknown job type: ${job.name}`);
     }
+    const m = result.metrics;
+    await recordJobSafely(publisher, {
+      kind,
+      model: result.model,
+      outcome: 'completed',
+      queueWaitMs: m.queueWaitTimeMs,
+      executionMs: m.executionTimeMs,
+      promptTokens: m.promptTokens,
+      completionTokens: m.completionTokens,
+      tokensPerSecond: m.tokensPerSecond,
+      ...(m.costUsd !== undefined ? { costUsd: m.costUsd } : {})
+    });
+    return result;
   } catch (error: any) {
     // Aborting surfaces as whatever the interrupted request threw; report it as the cancellation it is, and don't retry
     const cancelled = signal?.aborted || error.message === CANCELLED_MESSAGE;
     if (cancelled) console.log(`[Job ${job.id}] Cancelled.`);
     else console.error(`[Job ${job.id}] System execution failed:`, error.message);
     if (job.data.stream) await publish(job, { type: 'error', message: cancelled ? CANCELLED_MESSAGE : error.message, cancelled });
+
+    // Record a failure once, on the attempt that won't be retried
+    const willRetry = !cancelled && !(error instanceof UnrecoverableError) && job.attemptsMade + 1 < (job.opts.attempts ?? 1);
+    if (!willRetry) {
+      await recordJobSafely(publisher, {
+        kind,
+        model: model ?? 'unknown',
+        outcome: cancelled ? 'cancelled' : 'failed',
+        queueWaitMs: queueWaitTimeMs,
+        executionMs: Date.now() - startTime
+      });
+    }
     throw cancelled ? new UnrecoverableError(CANCELLED_MESSAGE) : error;
   }
 }

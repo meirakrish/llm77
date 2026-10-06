@@ -15,6 +15,7 @@ import {
   workerHeartbeatKey
 } from './events';
 import { jobsAhead, streamJobEvents } from './job-stream';
+import { getStats, kindOf, recordJobSafely, STATS_RANGES, type StatsRange } from './metrics';
 import { config } from './config';
 import { parseMessages } from './chat';
 import type { ChatMessage } from './providers/types';
@@ -200,6 +201,13 @@ app.delete('/api/jobs/:id', async (req: Request, res: Response): Promise<void> =
         await job.remove();
         // Tell anyone following the job; nothing else will write to its stream
         await appendJobEvent(redisConnection, id, { type: 'error', message: CANCELLED_MESSAGE, cancelled: true });
+        // It never reaches a worker, which records every other outcome
+        await recordJobSafely(redisConnection, {
+          kind: kindOf(job.name),
+          model: job.data.model ?? config.llmModel,
+          outcome: 'cancelled',
+          queueWaitMs: Date.now() - job.timestamp
+        });
         res.status(204).end();
         return;
       } catch {
@@ -211,6 +219,21 @@ app.delete('/api/jobs/:id', async (req: Request, res: Response): Promise<void> =
   } catch (error) {
     console.error('Cancel error:', error);
     res.status(500).json({ error: 'Failed to cancel the job.' });
+  }
+});
+
+// Usage over a time range: totals, per-model performance and a timeline, from the jobs workers have finished
+app.get('/api/stats', async (req: Request, res: Response): Promise<void> => {
+  const range = String(req.query.range ?? '24h');
+  if (!(range in STATS_RANGES)) {
+    res.status(400).json({ error: `range must be one of: ${Object.keys(STATS_RANGES).join(', ')}.` });
+    return;
+  }
+  try {
+    res.json(await getStats(redisConnection, range as StatsRange));
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ error: 'Failed to compute stats.' });
   }
 });
 
