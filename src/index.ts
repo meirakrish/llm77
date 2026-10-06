@@ -5,7 +5,16 @@ import { addDocument, deleteDocument, getDocument, isValidDocumentId, listDocume
 import { extractText, UnsupportedFileError } from './extract';
 import crypto from 'crypto';
 import cors from 'cors';
-import { streamChannel, StreamEvent, workerHeartbeatKey, isClaudeModel, CLOUD_JOB_PREFIX } from './events';
+import {
+  appendJobEvent,
+  CANCEL_CHANNEL,
+  cancelKey,
+  CANCELLED_MESSAGE,
+  CLOUD_JOB_PREFIX,
+  isClaudeModel,
+  workerHeartbeatKey
+} from './events';
+import { jobsAhead, streamJobEvents } from './job-stream';
 import { config } from './config';
 import { parseMessages } from './chat';
 import type { ChatMessage } from './providers/types';
@@ -119,20 +128,12 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  // Subscribe before queueing so no tokens are published before we are listening
   const jobId = target.jobId ?? crypto.randomUUID();
-  const subscriber = redisConnection.duplicate();
-  const cleanup = () => {
-    subscriber.quit().catch(() => {});
-  };
-
   try {
-    await subscriber.subscribe(streamChannel(jobId));
     // Generation still runs on the worker, so the concurrency: 1 GPU safeguard applies to local streams too
     // No retries: the client has already received the error event and would see tokens replayed
     await target.queue.add('generate-text', { messages, model: target.model, stream: true }, { jobId, attempts: 1 });
   } catch (error) {
-    cleanup();
     console.error('Stream queue error:', error);
     res.status(500).json({ error: 'Failed to queue the stream request.' });
     return;
@@ -144,20 +145,73 @@ app.post('/api/stream', async (req: Request, res: Response): Promise<void> => {
     Connection: 'keep-alive'
   });
   res.write(`event: queued\ndata: ${JSON.stringify({ jobId })}\n\n`);
+  // If the client goes away the job still completes; GET /api/jobs/:id/stream picks up where it left off
+  await streamJobEvents(redisConnection, target.queue, jobId, '0', res);
+});
 
-  subscriber.on('message', (_channel, message) => {
-    const event: StreamEvent = JSON.parse(message);
-    const { type, ...data } = event;
-    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-
-    if (type === 'done' || type === 'error') {
-      cleanup();
-      res.end();
+// Follow a streamed generation job: replays its events after the given event ID (all of them by default), then
+// continues live. Accepts the ID as ?after= or the standard Last-Event-ID header.
+app.get('/api/jobs/:id/stream', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  const after = String(req.query.after ?? req.get('last-event-id') ?? '0');
+  if (!/^\d+(-\d+)?$/.test(after)) {
+    res.status(400).json({ error: 'after must be an event ID.' });
+    return;
+  }
+  try {
+    const queue = queueForJob(id);
+    const job = await queue.getJob(id);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found.' });
+      return;
     }
-  });
+    if (job.name !== 'generate-text') {
+      res.status(400).json({ error: 'Only generation jobs can be followed; poll GET /api/jobs/:id for others.' });
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    await streamJobEvents(redisConnection, queue, id, after, res);
+  } catch (error) {
+    console.error('Job stream error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to follow the job.' });
+    else res.end();
+  }
+});
 
-  // Stop listening if the client goes away; the job itself still completes and can be polled
-  res.on('close', cleanup);
+// Cancel a job: a waiting one is removed from the queue, a running one is stopped by its worker
+app.delete('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const job = await queueForJob(id).getJob(id);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found.' });
+      return;
+    }
+    const state = await job.getState();
+    if (state === 'completed' || state === 'failed') {
+      res.status(409).json({ error: 'The job has already finished.' });
+      return;
+    }
+
+    // Remembered for an hour so a worker that picks the job up right now still sees it
+    await redisConnection.set(cancelKey(id), '1', 'EX', 3600);
+    if (state !== 'active') {
+      try {
+        await job.remove();
+        // Tell anyone following the job; nothing else will write to its stream
+        await appendJobEvent(redisConnection, id, { type: 'error', message: CANCELLED_MESSAGE, cancelled: true });
+        res.status(204).end();
+        return;
+      } catch {
+        // A worker took it in the meantime (removing a locked job fails); stop it there instead
+      }
+    }
+    await redisConnection.publish(CANCEL_CHANNEL, id);
+    res.status(202).json({ message: 'Cancelling: the worker will stop the job.' });
+  } catch (error) {
+    console.error('Cancel error:', error);
+    res.status(500).json({ error: 'Failed to cancel the job.' });
+  }
 });
 
 // Endpoint describing the available models; workerOnline is false if the worker hasn't sent a heartbeat recently
@@ -198,12 +252,13 @@ app.get('/api/jobs/:id', async (req: Request, res: Response): Promise<void> => {
       res.status(404).json({ error: 'Job not found.' });
       return;
     }
-
     const state = await job.getState();
-    
+
     res.json({
       jobId: job.id,
       status: state,
+      // Jobs that will run before this one, while it waits in the queue
+      ahead: state === 'waiting' ? await jobsAhead(queueForJob(id), id) : null,
       data: job.returnvalue?.structuredData ?? job.returnvalue?.text ?? null,
       model: job.returnvalue?.model ?? null,
       metrics: job.returnvalue?.metrics || null, // Structural metrics included here

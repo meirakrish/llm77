@@ -6,7 +6,7 @@
   import ModelChecklist from './lib/ModelChecklist.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
   import { history } from './lib/history.svelte';
-  import { MODES, type Entry, type RunMode } from './lib/types';
+  import { MODES, type Entry, type JobEntry, type RunMode } from './lib/types';
 
   let mode = $state<RunMode>('ask');
   let input = $state('');
@@ -142,6 +142,7 @@
           onreuse={() => reuse(entry)}
           ondelete={() => history.remove(entry.id)}
           onfollowup={(text) => entry.mode === 'ask' && history.followUp(entry, text)}
+          onstop={(run) => history.stop(run ?? (entry as JobEntry))}
         />
       {:else}
         <p class="empty">Nothing yet. Run a query to start your history.</p>

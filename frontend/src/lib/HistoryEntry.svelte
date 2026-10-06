@@ -8,12 +8,20 @@
     entry,
     onreuse,
     ondelete,
-    onfollowup
-  }: { entry: Entry; onreuse: () => void; ondelete: () => void; onfollowup: (text: string) => void } = $props();
+    onfollowup,
+    onstop
+  }: {
+    entry: Entry;
+    onreuse: () => void;
+    ondelete: () => void;
+    onfollowup: (text: string) => void;
+    // Stop a run, or the entry itself for an analysis
+    onstop: (run?: Run) => void;
+  } = $props();
 
   let followText = $state('');
 
-  const settled = (run: Run) => run.status === 'done' || run.status === 'error';
+  const settled = (run: Run) => run.status === 'done' || run.status === 'error' || run.status === 'cancelled';
   // The model shown in the header; a comparison names its models in each column instead
   const headerModel = $derived(
     entry.mode === 'compare'
@@ -68,7 +76,7 @@
       {#if i > 0}
         <div class="query follow">{run.input}</div>
       {/if}
-      <RunResult {run} />
+      <RunResult {run} onstop={() => onstop(run)} />
     {/each}
     {#if canFollowUp}
       <form class="follow-form" onsubmit={sendFollowUp}>
@@ -90,7 +98,7 @@
             <span class="model">{run.model ?? run.requestedModel}</span>
             {#if run.id === fastestId}<span class="tag" title="Highest generation speed (tokens per second)">fastest</span>{/if}
           </div>
-          <RunResult {run} showSources={false} />
+          <RunResult {run} showSources={false} onstop={() => onstop(run)} />
         </section>
       {/each}
     </div>
@@ -99,9 +107,19 @@
     {/if}
   {:else if entry.status === 'error'}
     <div class="error">{entry.error || 'Something went wrong.'}</div>
+  {:else if entry.status === 'cancelled'}
+    <div class="status">Stopped.</div>
   {:else if entry.mode === 'analyze'}
     {#if entry.status !== 'done' || !entry.data}
-      <div class="status">Analyzing…</div>
+      <div class="status">
+        Analyzing…
+        {#if typeof entry.ahead === 'number'}
+          Queued: {entry.ahead === 0 ? 'next in line' : `${entry.ahead} job${entry.ahead === 1 ? '' : 's'} ahead`}.
+        {/if}
+      </div>
+      {#if entry.jobId}
+        <button class="link stop" type="button" onclick={() => onstop()}>Stop</button>
+      {/if}
     {:else}
       <div class="chips">
         <span class="chip">{entry.data.category}</span>
@@ -146,6 +164,8 @@
   .query { margin: 8px 0 10px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
   .query.follow { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border); }
   .status { color: var(--muted); font-style: italic; }
+  .stop { margin-top: 6px; padding: 0; color: var(--danger); }
+  .stop:hover { color: var(--danger); text-decoration: underline; }
   .error { color: var(--danger); }
   .metrics { margin-top: 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 

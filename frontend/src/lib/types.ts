@@ -2,7 +2,8 @@
 export type Mode = 'ask' | 'compare' | 'analyze' | 'seed';
 // Modes the Workbench can run; knowledge is added in the Knowledge base tab
 export type RunMode = Exclude<Mode, 'seed'>;
-export type Status = 'pending' | 'streaming' | 'done' | 'error';
+// cancelled: stopped by the user; any text generated before that is kept
+export type Status = 'pending' | 'streaming' | 'done' | 'error' | 'cancelled';
 
 export interface Metrics {
   queueWaitTimeMs: number;
@@ -70,6 +71,8 @@ export interface Run {
   metrics?: Metrics | null;
   // Knowledge base chunks the answer was grounded in; unset for answers saved before sources were tracked
   sources?: Source[] | null;
+  // Jobs that will run before this one while it waits in the queue; null once it is running, unset if not known yet
+  ahead?: number | null;
   error?: string;
 }
 
@@ -103,6 +106,7 @@ export interface JobEntry extends BaseEntry {
   requestedModel?: string;
   model?: string | null;
   metrics?: Metrics | null;
+  ahead?: number | null;
   error?: string;
 }
 

@@ -3,11 +3,22 @@ import type { Analysis, ApiInfo, ChatMessage, DocumentDetail, DocumentSummary, M
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
 
-export type StreamEvent =
+// id: the event's position in the job's stream, for resuming after it (unset for events that aren't stored)
+export type StreamEvent = { id?: string } & (
   | { type: 'queued'; jobId: string }
+  // ahead: jobs that will run first; null once this one is running
+  | { type: 'position'; ahead: number | null }
   | { type: 'token'; token: string }
   | { type: 'done'; text: string; model: string; metrics: Metrics; sources?: Source[] }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; cancelled?: boolean }
+);
+
+// A failed request, with its HTTP status
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
 
 export interface JobStatus {
   jobId: string;
@@ -16,6 +27,7 @@ export interface JobStatus {
   model: string | null;
   metrics: Metrics | null;
   sources?: Source[] | null;
+  ahead?: number | null;
   failedReason: string | null;
 }
 
@@ -23,7 +35,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(API_URL + path, init);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Request failed (${res.status})`);
+    throw new ApiError(err.error || `Request failed (${res.status})`, res.status);
   }
   return res;
 }
@@ -31,19 +43,22 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
 const postJson = (path: string, body: unknown) =>
   request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-function parseEvent(raw: string): StreamEvent {
-  let type = 'message';
+// Returns null for comments (keep-alives)
+function parseEvent(raw: string): StreamEvent | null {
+  let type = '';
+  let id: string | undefined;
   let data = '';
   for (const line of raw.split('\n')) {
     if (line.startsWith('event: ')) type = line.slice(7);
+    else if (line.startsWith('id: ')) id = line.slice(4);
     else if (line.startsWith('data: ')) data += line.slice(6);
   }
-  return { type, ...(data ? JSON.parse(data) : {}) } as StreamEvent;
+  if (!type) return null;
+  return { type, ...(id ? { id } : {}), ...(data ? JSON.parse(data) : {}) } as StreamEvent;
 }
 
-// Queue a generation job for a conversation and yield its Server-Sent Events as they arrive
-export async function* streamChat(messages: ChatMessage[], model?: string): AsyncGenerator<StreamEvent> {
-  const res = await postJson('/api/stream', { messages, model });
+// Yield the Server-Sent Events of a response as they arrive; ends when the connection closes
+async function* readEvents(res: Response): AsyncGenerator<StreamEvent> {
   const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';
 
@@ -55,9 +70,32 @@ export async function* streamChat(messages: ChatMessage[], model?: string): Asyn
     // SSE messages are separated by a blank line
     let end;
     while ((end = buffer.indexOf('\n\n')) !== -1) {
-      yield parseEvent(buffer.slice(0, end));
+      const event = parseEvent(buffer.slice(0, end));
       buffer = buffer.slice(end + 2);
+      if (event) yield event;
     }
+  }
+}
+
+// Queue a generation job for a conversation and yield its events as they arrive
+export async function* streamChat(messages: ChatMessage[], model?: string): AsyncGenerator<StreamEvent> {
+  yield* readEvents(await postJson('/api/stream', { messages, model }));
+}
+
+// Follow a generation job's events, starting after the given event ID (from the beginning if unset)
+export async function* followJob(jobId: string, after?: string): AsyncGenerator<StreamEvent> {
+  const query = after ? `?after=${encodeURIComponent(after)}` : '';
+  yield* readEvents(await request(`/api/jobs/${encodeURIComponent(jobId)}/stream${query}`));
+}
+
+// Returns false if the job can't be cancelled because it has already finished or no longer exists
+export async function cancelJob(jobId: string): Promise<boolean> {
+  try {
+    await request(`/api/jobs/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 404 || error.status === 409)) return false;
+    throw error;
   }
 }
 

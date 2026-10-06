@@ -20,7 +20,7 @@ function load(): Entry[] {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const settled = (status: string) => status === 'done' || status === 'error';
+const settled = (status: string) => status === 'done' || status === 'error' || status === 'cancelled';
 
 const newRun = (input: string, requestedModel?: string): Run => ({
   id: crypto.randomUUID(),
@@ -42,6 +42,9 @@ function conversation(runs: Run[]): ChatMessage[] {
 
 class History {
   entries = $state<Entry[]>(load());
+  // The last event received for each streaming run, so a dropped connection resumes right after it. Not saved:
+  // after a reload the job's events are replayed from the start.
+  private lastEventIds = new Map<string, string>();
 
   save() {
     try {
@@ -104,6 +107,17 @@ class History {
     this.runAnalyze(this.entries[0] as JobEntry);
   }
 
+  // Stop a running or queued generation or analysis; text generated so far is kept
+  async stop(target: Run | JobEntry) {
+    if (!target.jobId || settled(target.status)) return;
+    try {
+      // false: it finished in the meantime, and its result arrives as usual
+      if (await api.cancelJob(target.jobId)) this.update(target, { status: 'cancelled', ahead: null });
+    } catch (error) {
+      console.error('Failed to cancel:', error);
+    }
+  }
+
   remove(id: string) {
     this.entries = this.entries.filter((e) => e.id !== id);
     this.save();
@@ -122,8 +136,9 @@ class History {
         for (const run of entry.runs) {
           if (settled(run.status)) continue;
           if (run.jobId) {
-            this.update(run, { status: 'streaming' });
-            this.pollRun(entry, run);
+            // Replayed from the job's first event, so the text is rebuilt as it arrives
+            this.update(run, { status: 'streaming', text: '' });
+            this.follow(entry, run);
           } else {
             this.update(run, interrupted);
           }
@@ -142,29 +157,62 @@ class History {
 
   private async stream(entry: Entry, run: Run, messages: ChatMessage[]) {
     try {
-      for await (const event of api.streamChat(messages, run.requestedModel)) {
-        if (event.type === 'queued') {
-          this.update(run, { jobId: event.jobId, status: 'streaming' });
-        } else if (event.type === 'token') {
-          // Not persisted per token; the final text is saved on 'done'
-          run.text += event.token;
-        } else if (event.type === 'done') {
-          this.update(run, {
-            status: 'done',
-            text: event.text,
-            model: event.model,
-            metrics: event.metrics,
-            sources: event.sources ?? null
-          });
-        } else if (event.type === 'error') {
-          this.update(run, { status: 'error', error: event.message });
-        }
-      }
-      // The connection dropped before a final event; recover the result by polling the job
-      if (!settled(run.status)) await this.pollRun(entry, run);
+      await this.consume(run, api.streamChat(messages, run.requestedModel));
     } catch (error) {
-      this.update(run, { status: 'error', error: (error as Error).message });
+      // Failed before the job was queued, so there is nothing to follow
+      if (!run.jobId) {
+        this.update(run, { status: 'error', error: (error as Error).message });
+        return;
+      }
     }
+    // The connection closed before the job finished; pick up where it left off
+    await this.follow(entry, run);
+  }
+
+  // Apply a job's events to a run; returns when the connection closes
+  private async consume(run: Run, events: AsyncGenerator<api.StreamEvent>) {
+    for await (const event of events) {
+      if (event.id) this.lastEventIds.set(run.id, event.id);
+      if (event.type === 'queued') {
+        this.update(run, { jobId: event.jobId, status: 'streaming' });
+      } else if (event.type === 'position') {
+        run.ahead = event.ahead;
+      } else if (event.type === 'token') {
+        // Not persisted per token; the final text is saved on 'done'
+        run.ahead = null;
+        run.text += event.token;
+      } else if (event.type === 'done') {
+        this.update(run, {
+          status: 'done',
+          text: event.text,
+          model: event.model,
+          metrics: event.metrics,
+          sources: event.sources ?? null,
+          ahead: null
+        });
+      } else if (event.type === 'error') {
+        this.update(run, event.cancelled ? { status: 'cancelled', ahead: null } : { status: 'error', error: event.message });
+      }
+    }
+  }
+
+  // Follow a queued job until it settles, reconnecting (with growing delays) whenever the connection drops
+  private async follow(entry: Entry, run: Run) {
+    let failures = 0;
+    while (!settled(run.status) && this.has(entry)) {
+      try {
+        await this.consume(run, api.followJob(run.jobId!, this.lastEventIds.get(run.id)));
+        failures = 0;
+      } catch (error) {
+        if (error instanceof api.ApiError && error.status === 404) {
+          this.update(run, { status: 'error', error: 'Job not found. It may have expired from the queue.' });
+          break;
+        }
+        failures++;
+      }
+      if (!settled(run.status)) await sleep(Math.min(500 * 2 ** failures, 10000));
+    }
+    this.lastEventIds.delete(run.id);
   }
 
   private async runAnalyze(entry: JobEntry) {
@@ -176,37 +224,23 @@ class History {
     }
   }
 
-  private async pollRun(entry: Entry, run: Run) {
-    const job = await this.waitForJob(entry, run.jobId!);
-    if (job === undefined) return;
-    if (job === null) this.update(run, { status: 'error', error: 'Job not found. It may have expired from the queue.' });
-    else if (job.status === 'failed') this.update(run, { status: 'error', error: job.failedReason ?? 'Job failed.' });
-    else {
-      this.update(run, {
-        status: 'done',
-        text: job.data as string,
-        model: job.model,
-        metrics: job.metrics,
-        sources: job.sources ?? null
-      });
-    }
-  }
-
   private async pollAnalysis(entry: JobEntry) {
-    const job = await this.waitForJob(entry, entry.jobId!);
+    const job = await this.waitForJob(entry, entry);
     if (job === undefined) return;
     if (job === null) this.update(entry, { status: 'error', error: 'Job not found. It may have expired from the queue.' });
-    else if (job.status === 'failed') this.update(entry, { status: 'error', error: job.failedReason ?? 'Job failed.' });
-    else this.update(entry, { status: 'done', data: job.data as Analysis, model: job.model, metrics: job.metrics });
+    else if (job.status === 'failed') this.update(entry, { status: 'error', error: job.failedReason ?? 'Job failed.', ahead: null });
+    else this.update(entry, { status: 'done', data: job.data as Analysis, model: job.model, metrics: job.metrics, ahead: null });
   }
 
-  // Poll a queued job until it completes or fails; null if it no longer exists, undefined if the entry was deleted
-  private async waitForJob(entry: Entry, jobId: string): Promise<api.JobStatus | null | undefined> {
+  // Poll a queued job until it completes or fails; null if it no longer exists, undefined if the entry was
+  // deleted or the job cancelled meanwhile
+  private async waitForJob(entry: Entry, target: JobEntry): Promise<api.JobStatus | null | undefined> {
     for (;;) {
-      if (!this.has(entry)) return undefined;
+      if (!this.has(entry) || settled(target.status)) return undefined;
       try {
-        const job = await api.getJob(jobId);
+        const job = await api.getJob(target.jobId!);
         if (!job || job.status === 'completed' || job.status === 'failed') return job;
+        target.ahead = job.ahead ?? null;
       } catch {
         // API temporarily unreachable; keep trying
       }
