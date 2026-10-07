@@ -1,4 +1,4 @@
-import { Job, Queue } from 'bullmq';
+import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 import { Response } from 'express';
 import { CANCELLED_MESSAGE, jobEventsKey, StreamEvent } from './events';
@@ -16,18 +16,19 @@ export async function jobsAhead(queue: Queue, jobId: string): Promise<number | n
   return index === -1 ? null : index + active;
 }
 
-// The event a finished job would have ended its stream with; used when the stream has expired or never had one
-async function finalEvent(job: Job): Promise<StreamEvent | null> {
-  const state = await job.getState();
+// The event a finished job would have ended its stream with; used when the stream has expired or never had one.
+// Re-reads the job once it has finished, since a copy read while it was running has no result yet.
+async function finalEvent(queue: Queue, jobId: string): Promise<StreamEvent | null> {
+  const state = await queue.getJobState(jobId);
+  if (state !== 'completed' && state !== 'failed') return null;
+  const job = await queue.getJob(jobId);
+  if (!job) return null;
   if (state === 'completed') {
     const { text, model, metrics, sources } = job.returnvalue ?? {};
     return { type: 'done', text, model, metrics, sources: sources ?? [] };
   }
-  if (state === 'failed') {
-    const message = job.failedReason || 'Job failed.';
-    return { type: 'error', message, cancelled: message === CANCELLED_MESSAGE };
-  }
-  return null;
+  const message = job.failedReason || 'Job failed.';
+  return { type: 'error', message, cancelled: message === CANCELLED_MESSAGE };
 }
 
 type Entries = [id: string, fields: string[]][];
@@ -86,7 +87,7 @@ export async function streamJobEvents(redis: IORedis, queue: Queue, jobId: strin
         send('error', { message: 'Job not found. It may have been cancelled or expired from the queue.' });
         break;
       }
-      const final = await finalEvent(job);
+      const final = await finalEvent(queue, jobId);
       if (final) {
         // Its last events may have been written just before it finished
         const late = (await reader.xread('STREAMS', key, after)) as [string, Entries][] | null;
