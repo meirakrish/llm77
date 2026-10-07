@@ -290,7 +290,7 @@ docker run -d --rm --name llm77-test-redis -p 127.0.0.1:6390:6379 redis:7-alpine
 TEST_REDIS_URL=redis://127.0.0.1:6390 npm run test:integration
 docker stop llm77-test-redis
 ```
-GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: backend type check, unit tests and builds; integration tests against a Redis service container; frontend `svelte-check` and build; and a build of each Docker image (nothing is pushed).
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: backend type check, unit tests and builds; integration tests against a Redis service container; and frontend `svelte-check` and build. Docker images are not built in CI.
 
 ## 📁 Project Directory Layout
 
