@@ -43,6 +43,40 @@ The worker never contacts Ollama, Anthropic or LanceDB itself: it asks the backe
 *   **Deterministic Structured Outputs:** Utilizes **Zod** schema constraints alongside Ollama's structural JSON grammar layer to guarantee text transformations exactly match valid backend schemas.
 *   **Performance Observability Matrix:** Captures queue latency delays, prompt/completion token consumption volumes, overall execution time, and raw throughput speeds (tokens per second).
 
+## 🐳 Run with Docker
+
+Every part runs as its own image, built from `docker/<name>/Dockerfile`, so the parts can be deployed and scaled separately. `docker-compose.yml` runs all of them together:
+```bash
+cp .env.example .env
+sed -i "s/^INTERNAL_API_TOKEN=.*/INTERNAL_API_TOKEN=$(openssl rand -hex 32)/" .env
+docker compose up --build
+```
+Then open http://localhost:8080. The first start downloads `LLM_MODEL` and `EMBED_MODEL` (about 700 MB for the Docker defaults, `qwen2.5:0.5b` and `nomic-embed-text`), so the API waits for that before it starts. The API is also published on port 3000 for curl (`API_PORT` changes it, `FRONTEND_PORT` changes 8080). Set `LLM_MODEL` in `.env` for a bigger model.
+
+| Image | Build | What it is | Persistent data |
+|---|---|---|---|
+| `llm77-frontend` | `docker build -f docker/frontend/Dockerfile -t llm77-frontend .` | The web UI served by nginx, which forwards `/api` to `API_UPSTREAM` (default `api:3000`) with streaming unbuffered. Listens on 8080 | – |
+| `llm77-api` | `docker build -f docker/api/Dockerfile -t llm77-api .` | The API, with the LanceDB knowledge base embedded (a library writing files, not a separate server) | `/data/lancedb` |
+| `llm77-worker` | `docker build -f docker/worker/Dockerfile -t llm77-worker .` | The worker, bundled into one file with its dependencies; talks only to Redis and the API (`API_URL`) | – |
+| `llm77-ollama` | `docker build -t llm77-ollama docker/ollama` | CPU-only Ollama, about 210 MB instead of the official image's ~9 GB (it leaves out the CUDA libraries); no models included | `/models` |
+| `llm77-redis` | `docker build -t llm77-redis docker/redis` | Redis with the settings BullMQ needs built in: keys are never evicted, data is persisted | `/data` |
+
+All images run as unprivileged users with numeric IDs (so Kubernetes' `runAsNonRoot` accepts them), declare health checks, and take their settings from the environment variables in the configuration table below. The API keeps no state of its own besides the knowledge base: queues, streamed answers, cancellation and stats all live in Redis. Because the knowledge base is local files, run one API instance per knowledge base volume.
+
+The volumes survive `docker compose down`; `docker compose down -v` deletes them.
+
+**Options**, enabled by adding the override files to `COMPOSE_FILE` in `.env`:
+* **GPU** (`docker-compose.gpu.yml`): swaps in the official `ollama/ollama` image, which includes the CUDA libraries (about a 3.8 GB download), and gives it the NVIDIA GPUs. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the Docker host.
+  ```bash
+  COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+  ```
+* **Your own Ollama** (`docker-compose.host-ollama.yml`): skips the bundled Ollama and uses the one already running on the Docker host, with the models you have installed. Ollama has to listen beyond localhost for containers to reach it: start it with `OLLAMA_HOST=0.0.0.0` (for the systemd service, `sudo systemctl edit ollama` and add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`). `HOST_OLLAMA_URL` points it elsewhere.
+  ```bash
+  COMPOSE_FILE=docker-compose.yml:docker-compose.host-ollama.yml
+  ```
+
+All other settings in the table below can be set in `.env` too. To run without Docker, follow the steps below.
+
 ## 📋 Prerequisites
 
 *   Node.js v22.9+ (the npm scripts use `--env-file-if-exists`)
@@ -113,6 +147,7 @@ The API and worker read their settings from environment variables; the defaults 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `3000` | API listen port |
+| `API_PORT`, `FRONTEND_PORT` | `3000`, `8080` | Docker only: host ports for the API and the web UI |
 | `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection for BullMQ and token streaming |
 | `QUEUE_NAME` | `llm-processing` | BullMQ queue shared by the API and worker |
 | `INTERNAL_API_TOKEN` | *(none, required)* | Shared secret between the backend and the worker; the backend's `/internal` API stays closed without it |
@@ -244,6 +279,8 @@ curl "http://localhost:3000/api/stats?range=7d"
 
 ```text
 ├── .env.example          # Template for local secrets (copy to .env)
+├── docker                # One Dockerfile per image: api, worker, frontend (with nginx.conf), ollama, redis (with redis.conf)
+├── docker-compose.yml    # Full stack; docker-compose.gpu.yml and docker-compose.host-ollama.yml are optional overrides
 ├── package.json          # Dependencies & development scripts
 ├── frontend              # Standalone Svelte + Vite web UI (own package.json)
 │   └── src

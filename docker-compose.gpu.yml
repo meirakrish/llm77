@@ -1,0 +1,20 @@
+# Run Ollama on NVIDIA GPUs: swaps the slim CPU-only image for the official one, which bundles the CUDA
+# libraries (a much larger download, about 3.8 GB). Needs the NVIDIA Container Toolkit on the Docker host.
+# Enable with COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml in .env
+services:
+  ollama:
+    build: !reset null
+    image: ollama/ollama:0.35.1
+    environment:
+      # Same model volume as the slim image
+      OLLAMA_MODELS: /models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  ollama-pull:
+    image: ollama/ollama:0.35.1
+    pull_policy: missing

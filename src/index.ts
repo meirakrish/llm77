@@ -237,6 +237,16 @@ app.get('/api/stats', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// Liveness check for containers and load balancers: the API is up and can reach Redis
+app.get('/api/health', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    await redisConnection.ping();
+    res.json({ ok: true });
+  } catch (error: any) {
+    res.status(503).json({ ok: false, error: `Redis unreachable: ${error.message}` });
+  }
+});
+
 // Endpoint describing the available models; workerOnline is false if the worker hasn't sent a heartbeat recently
 app.get('/api/info', async (_req: Request, res: Response): Promise<void> => {
   try {

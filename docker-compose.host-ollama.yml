@@ -1,0 +1,19 @@
+# Use the Ollama already running on the Docker host instead of the bundled one (no second copy of the models).
+# Enable with COMPOSE_FILE=docker-compose.yml:docker-compose.host-ollama.yml in .env
+#
+# Containers reach the host through host.docker.internal, so Ollama must listen beyond localhost:
+# start it with OLLAMA_HOST=0.0.0.0 (for the systemd service: `sudo systemctl edit ollama`, add
+# Environment="OLLAMA_HOST=0.0.0.0" under [Service], then restart it). Set HOST_OLLAMA_URL to point elsewhere.
+services:
+  ollama:
+    profiles: [bundled-ollama]
+  ollama-pull:
+    profiles: [bundled-ollama]
+  api:
+    environment:
+      OLLAMA_HOST: ${HOST_OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on: !override
+      redis:
+        condition: service_healthy
