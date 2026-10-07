@@ -2,9 +2,8 @@
 # Each part is its own image (docker/<name>/Dockerfile), so they can also be deployed separately.
 # Then open http://localhost:8080. Settings come from .env (INTERNAL_API_TOKEN is required; see README).
 #
-# Optional overrides, enabled by listing them in COMPOSE_FILE in .env:
-#   docker-compose.gpu.yml          run Ollama on an NVIDIA GPU (official CUDA image)
-#   docker-compose.host-ollama.yml  use the Ollama already running on this machine instead of the bundled one
+# Optional override, enabled by listing it in COMPOSE_FILE in .env:
+#   docker-compose.gpu.yml  run Ollama on an NVIDIA GPU (official CUDA image)
 
 x-backend: &backend
   restart: unless-stopped

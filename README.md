@@ -64,14 +64,10 @@ All images run as unprivileged users with numeric IDs (so Kubernetes' `runAsNonR
 
 The volumes survive `docker compose down`; `docker compose down -v` deletes them.
 
-**Options**, enabled by adding the override files to `COMPOSE_FILE` in `.env`:
+**GPU option**, enabled by adding the override file to `COMPOSE_FILE` in `.env`:
 * **GPU** (`docker-compose.gpu.yml`): swaps in the official `ollama/ollama` image, which includes the CUDA libraries (about a 3.8 GB download), and gives it the NVIDIA GPUs. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the Docker host.
   ```bash
   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
-  ```
-* **Your own Ollama** (`docker-compose.host-ollama.yml`): skips the bundled Ollama and uses the one already running on the Docker host, with the models you have installed. Ollama has to listen beyond localhost for containers to reach it: start it with `OLLAMA_HOST=0.0.0.0` (for the systemd service, `sudo systemctl edit ollama` and add `Environment="OLLAMA_HOST=0.0.0.0"` under `[Service]`). `HOST_OLLAMA_URL` points it elsewhere.
-  ```bash
-  COMPOSE_FILE=docker-compose.yml:docker-compose.host-ollama.yml
   ```
 
 All other settings in the table below can be set in `.env` too. To run without Docker, follow the steps below.
@@ -292,7 +288,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
 ├── .env.example          # Template for local secrets (copy to .env)
 ├── .github/workflows     # CI: type checks, tests, builds and Docker image builds
 ├── docker                # One Dockerfile per image: api, worker, frontend (with nginx.conf), ollama, redis (with redis.conf)
-├── docker-compose.yml    # Full stack; docker-compose.gpu.yml and docker-compose.host-ollama.yml are optional overrides
+├── docker-compose.yml    # Full stack; docker-compose.gpu.yml is an optional override
 ├── package.json          # Dependencies & development scripts
 ├── frontend              # Standalone Svelte + Vite web UI (own package.json)
 │   └── src
