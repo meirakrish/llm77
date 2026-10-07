@@ -254,6 +254,8 @@ curl http://localhost:3000/api/info
 ```
 
 **Downloading models:** `POST /api/models/pulls` with `{"model": "llama3.2:1b"}` starts downloading a model into the backend's Ollama (any [Ollama library](https://ollama.com/library) name, or `hf.co/<user>/<repo>` for a GGUF repository) and returns at once. The backend runs the download itself, so it continues if the browser closes, but a backend restart stops it (pulling again resumes it). `GET /api/models/pulls` lists active and recently finished downloads with their progress in bytes, and `DELETE /api/models/pulls/<model>` (URL-encoded) cancels one. A finished model is listed by `GET /api/models` right away, unless it is embedding-only. Anyone who can reach the API can download models, so mind the disk space on a shared server.
+
+`GET /api/models/catalog` lists the models the Models tab offers (a curated list in `src/model-catalog.ts`), each with its download size (`sizeBytes`), parameter count (`parameterSize`, e.g. `"3.2B"`), quantization and tags (`vision`, `reasoning`). The figures come from the Ollama registry (`registry.ollama.ai`) and are cached for six hours; they are `null` when the backend can't reach the registry.
 ```bash
 curl -X POST http://localhost:3000/api/models/pulls -H 'Content-Type: application/json' -d '{"model": "llama3.2:1b"}'
 curl http://localhost:3000/api/models/pulls

@@ -13,6 +13,7 @@ import { parseMessages } from './chat';
 import type { ChatMessage } from './providers/types';
 import { getModelsInfo } from './model-info';
 import { cancelPull, isValidModelName, listPulls, startPull } from './model-pulls';
+import { getCatalog } from './model-catalog';
 import { createInternalRouter } from './internal-api';
 
 const defaultJobOptions: DefaultJobOptions = {
@@ -258,6 +259,11 @@ export function createApp(redisConnection: IORedis) {
       console.error('Models fetch error:', error);
       res.status(500).json({ error: 'Failed to look up models.' });
     }
+  });
+
+  // Models offered for download, with download size and parameter count from the Ollama registry
+  app.get('/api/models/catalog', async (_req: Request, res: Response): Promise<void> => {
+    res.json({ models: await getCatalog() });
   });
 
   // Model downloads: active and recently finished ones, with progress

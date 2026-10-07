@@ -138,6 +138,16 @@ export interface ModelPull {
   canGenerate?: boolean;
 }
 
+// A model offered for download (see GET /api/models/catalog); the figures are null when the registry was unreachable
+export interface CatalogModel {
+  model: string;
+  description: string;
+  tags: ('vision' | 'reasoning')[];
+  sizeBytes: number | null;
+  parameterSize: string | null;
+  quantization: string | null;
+}
+
 export interface ModelsResponse {
   workerOnline: boolean;
   defaultModel: string | null;
