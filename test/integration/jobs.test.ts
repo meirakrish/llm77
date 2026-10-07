@@ -38,6 +38,24 @@ describe('service status', () => {
   });
 });
 
+// Downloads themselves are covered in test/model-pulls.test.ts; these requests never reach Ollama
+describe('model downloads', () => {
+  it('lists no downloads to begin with', async () => {
+    expect(await api.get('/api/models/pulls')).toEqual({ status: 200, body: { pulls: [] } });
+  });
+
+  it.each([{}, { model: '' }, { model: 'bad name' }, { model: 42 }])('rejects %j', async (request) => {
+    expect(await api.post('/api/models/pulls', request)).toEqual({ status: 400, body: { error: 'A model name like llama3.2:1b is required.' } });
+  });
+
+  it('reports cancelling a download that is not running', async () => {
+    expect(await api.delete(`/api/models/pulls/${encodeURIComponent('hf.co/x/y:Q4')}`)).toEqual({
+      status: 404,
+      body: { error: 'No download of that model is in progress.' }
+    });
+  });
+});
+
 describe('streaming', () => {
   it('streams tokens and the result of a generation', async () => {
     const { status, events } = await api.stream({ prompt: 'Say hello' });

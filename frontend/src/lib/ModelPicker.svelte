@@ -7,8 +7,9 @@
   const STORE_KEY = 'llm77.model';
   const status = $derived(models.status);
 
+  // A model picked elsewhere (e.g. the Models tab or a reused query) wins over the remembered one
   try {
-    value = localStorage.getItem(STORE_KEY) ?? '';
+    if (!value) value = localStorage.getItem(STORE_KEY) ?? '';
   } catch {}
 
   $effect(() => models.subscribe());

@@ -12,6 +12,7 @@ import { config } from './config';
 import { parseMessages } from './chat';
 import type { ChatMessage } from './providers/types';
 import { getModelsInfo } from './model-info';
+import { cancelPull, isValidModelName, listPulls, startPull } from './model-pulls';
 import { createInternalRouter } from './internal-api';
 
 const defaultJobOptions: DefaultJobOptions = {
@@ -257,6 +258,29 @@ export function createApp(redisConnection: IORedis) {
       console.error('Models fetch error:', error);
       res.status(500).json({ error: 'Failed to look up models.' });
     }
+  });
+
+  // Model downloads: active and recently finished ones, with progress
+  app.get('/api/models/pulls', (_req: Request, res: Response): void => {
+    res.json({ pulls: listPulls() });
+  });
+
+  // Download a model into Ollama; it runs in the background, so poll GET /api/models/pulls for progress
+  app.post('/api/models/pulls', (req: Request, res: Response): void => {
+    const model = typeof req.body.model === 'string' ? req.body.model.trim() : '';
+    if (!isValidModelName(model)) {
+      res.status(400).json({ error: 'A model name like llama3.2:1b is required.' });
+      return;
+    }
+    res.status(202).json({ pull: startPull(model) });
+  });
+
+  app.delete('/api/models/pulls/:model', (req: Request, res: Response): void => {
+    if (!cancelPull(req.params.model)) {
+      res.status(404).json({ error: 'No download of that model is in progress.' });
+      return;
+    }
+    res.status(204).end();
   });
 
   // Endpoint to poll the status and result of a job
