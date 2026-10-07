@@ -19,8 +19,9 @@
   let knowledgeDraft = $state('');
 
   // The open tab lives in the URL hash so reloads and links keep it
-  type View = 'workbench' | 'knowledge' | 'stats';
-  const viewFromHash = (): View => (location.hash === '#knowledge' ? 'knowledge' : location.hash === '#stats' ? 'stats' : 'workbench');
+  const VIEWS = ['workbench', 'history', 'knowledge', 'stats'] as const;
+  type View = (typeof VIEWS)[number];
+  const viewFromHash = (): View => VIEWS.find((v) => location.hash === `#${v}`) ?? 'workbench';
   let view = $state<View>(viewFromHash());
 
   function showView(next: View) {
@@ -39,6 +40,8 @@
     else if (mode === 'compare') history.compare(text, compareModels);
     else history.analyze(text, model || undefined);
     input = '';
+    // Results stream into the History tab
+    showView('history');
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -61,6 +64,7 @@
       showView('knowledge');
       return;
     }
+    showView('workbench');
     mode = entry.mode;
     input = entry.input;
     // The pickers drop models that are no longer offered
@@ -84,6 +88,9 @@
     <button type="button" aria-current={view === 'workbench' ? 'page' : undefined} onclick={() => showView('workbench')}>
       Workbench
     </button>
+    <button type="button" aria-current={view === 'history' ? 'page' : undefined} onclick={() => showView('history')}>
+      History{#if history.entries.length}<span class="count">{history.entries.length}</span>{/if}
+    </button>
     <button type="button" aria-current={view === 'knowledge' ? 'page' : undefined} onclick={() => showView('knowledge')}>
       Knowledge base
     </button>
@@ -96,6 +103,26 @@
     <Knowledge bind:draft={knowledgeDraft} />
   {:else if view === 'stats'}
     <Stats />
+  {:else if view === 'history'}
+    <div class="history-head">
+      <p class="sub">Saved in this browser, newest first.</p>
+      {#if history.entries.length}
+        <button class="link danger" id="clear" type="button" onclick={clearAll}>Clear all</button>
+      {/if}
+    </div>
+    <div id="history">
+      {#each history.entries as entry (entry.id)}
+        <HistoryEntry
+          {entry}
+          onreuse={() => reuse(entry)}
+          ondelete={() => history.remove(entry.id)}
+          onfollowup={(text) => entry.mode === 'ask' && history.followUp(entry, text)}
+          onstop={(run) => history.stop(run ?? (entry as JobEntry))}
+        />
+      {:else}
+        <p class="empty">Nothing yet. Run a query in the Workbench to start your history.</p>
+      {/each}
+    </div>
   {:else}
     <form class="composer" id="composer" onsubmit={submit}>
       <div class="modes" role="group" aria-label="Mode">
@@ -134,26 +161,6 @@
         >Run</button>
       </div>
     </form>
-
-    <div class="history-head">
-      <h2>History</h2>
-      {#if history.entries.length}
-        <button class="link danger" id="clear" type="button" onclick={clearAll}>Clear all</button>
-      {/if}
-    </div>
-    <div id="history">
-      {#each history.entries as entry (entry.id)}
-        <HistoryEntry
-          {entry}
-          onreuse={() => reuse(entry)}
-          ondelete={() => history.remove(entry.id)}
-          onfollowup={(text) => entry.mode === 'ask' && history.followUp(entry, text)}
-          onstop={(run) => history.stop(run ?? (entry as JobEntry))}
-        />
-      {:else}
-        <p class="empty">Nothing yet. Run a query to start your history.</p>
-      {/each}
-    </div>
   {/if}
 </main>
 
@@ -200,7 +207,11 @@
     padding: 8px 16px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer;
   }
 
-  .history-head { display: flex; align-items: baseline; justify-content: space-between; margin: 32px 0 12px; }
-  .history-head h2 { font-size: 15px; margin: 0; }
+  .tabs .count {
+    margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--surface-2);
+    font-size: 11px; font-weight: 600; color: var(--muted);
+  }
+  .history-head { display: flex; align-items: baseline; justify-content: space-between; margin: 0 0 12px; }
+  .history-head .sub { margin: 0; }
   .empty { color: var(--muted); text-align: center; padding: 32px 0; font-size: 14px; }
 </style>
