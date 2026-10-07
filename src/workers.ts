@@ -14,16 +14,14 @@ function buildMetrics(usage: Usage, queueWaitTimeMs: number, executionTimeMs: nu
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
     totalTokens: usage.promptTokens + usage.completionTokens,
-    tokensPerSecond: usage.tokensPerSecond,
-    ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {})
+    tokensPerSecond: usage.tokensPerSecond
   };
 }
 
-// Start the local and cloud queue workers, their Redis connections and the heartbeat to the backend
+// Start the queue worker, its Redis connections and the heartbeat to the backend
 export function startWorkers() {
   const redisConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-  const cloudConnection = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
-  // Separate connection for writing stream events; the workers' connections are used for blocking commands
+  // Separate connection for writing stream events; the worker's connection is used for blocking commands
   const publisher = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
   // Subscribed connections can't run other commands, so cancel requests get their own
   const cancelSubscriber = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
@@ -116,8 +114,7 @@ export function startWorkers() {
         executionMs: m.executionTimeMs,
         promptTokens: m.promptTokens,
         completionTokens: m.completionTokens,
-        tokensPerSecond: m.tokensPerSecond,
-        ...(m.costUsd !== undefined ? { costUsd: m.costUsd } : {})
+        tokensPerSecond: m.tokensPerSecond
       });
       return result;
     } catch (error: any) {
@@ -142,26 +139,22 @@ export function startWorkers() {
     }
   }
 
-  // Local models share one GPU, so run one job at a time; Claude jobs run in parallel on their own queue
+  // Local models share one GPU, so run one job at a time
   const localWorker = new Worker(config.queueName, processJob, { connection: redisConnection, concurrency: 1 });
-  const cloudWorker = new Worker(config.cloudQueueName, processJob, {
-    connection: cloudConnection,
-    concurrency: config.cloudConcurrency
-  });
 
   // The API publishes the IDs of jobs to cancel; only the worker running a job can stop it
   cancelSubscriber.subscribe(CANCEL_CHANNEL).catch((error) => console.error('Cancel subscription failed:', error.message));
   cancelSubscriber.on('message', (_channel, jobId: string) => {
-    if (localWorker.cancelJob(jobId) || cloudWorker.cancelJob(jobId)) console.log(`[Job ${jobId}] Cancel requested.`);
+    if (localWorker.cancelJob(jobId)) console.log(`[Job ${jobId}] Cancel requested.`);
   });
 
   // Lets active jobs finish, then tells the backend the worker is offline and disconnects
   async function close() {
     clearInterval(heartbeatTimer);
-    await Promise.all([localWorker.close(), cloudWorker.close()]);
+    await localWorker.close();
     await backend.heartbeat(false).catch((error) => console.error('Failed to clear heartbeat:', error.message));
-    await Promise.all([publisher.quit(), cancelSubscriber.quit(), redisConnection.quit(), cloudConnection.quit()]);
+    await Promise.all([publisher.quit(), cancelSubscriber.quit(), redisConnection.quit()]);
   }
 
-  return { localWorker, cloudWorker, close };
+  return { localWorker, close };
 }

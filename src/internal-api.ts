@@ -5,18 +5,14 @@ import IORedis from 'ioredis';
 import { config } from './config';
 import { parseMessages } from './chat';
 import { searchRelevant } from './db';
-import { isClaudeModel, workerHeartbeatKey } from './events';
+import { workerHeartbeatKey } from './events';
 import { GenerateEvent, InternalError, SearchResponse } from './internal-protocol';
-import { claudeProvider } from './providers/claude';
 import { ollamaProvider } from './providers/ollama';
-import { Provider } from './providers/types';
 
 // The worker is considered offline if no heartbeat arrives within this window
 const HEARTBEAT_TTL_SEC = 60;
 
-const providerFor = (model: string): Provider => (isClaudeModel(model) ? claudeProvider : ollamaProvider);
-
-// Retrying can't fix refusals, bad requests or credential problems; everything else may be transient
+// Retrying can't fix invalid output or bad requests; everything else may be transient
 const isPermanent = (error: unknown) => error instanceof UnrecoverableError;
 
 function sendError(res: Response, status: number, error: string, permanent: boolean) {
@@ -39,7 +35,7 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
-// Abort the model call if the worker disconnects before the response finishes, so no GPU time or credits are wasted
+// Abort the model call if the worker disconnects before the response finishes, so no GPU time is wasted
 function abortOnDisconnect(res: Response) {
   const controller = new AbortController();
   res.on('close', () => {
@@ -69,7 +65,7 @@ export function createInternalRouter(redis: IORedis): Router {
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache' });
 
     try {
-      const result = await providerFor(model).streamText(model, messages, async (token) => {
+      const result = await ollamaProvider.streamText(model, messages, async (token) => {
         write({ type: 'token', token });
       }, signal);
       write({ type: 'done', ...result });
@@ -91,7 +87,7 @@ export function createInternalRouter(redis: IORedis): Router {
 
     const signal = abortOnDisconnect(res);
     try {
-      res.json(await providerFor(model).analyze(model, text, signal));
+      res.json(await ollamaProvider.analyze(model, text, signal));
     } catch (error: any) {
       if (signal.aborted) return;
       console.error(`[internal] Analysis with ${model} failed:`, error.message);

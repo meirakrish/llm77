@@ -6,19 +6,16 @@ import type IORedis from 'ioredis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/providers/ollama', () => ({ ollamaProvider: { streamText: vi.fn(), analyze: vi.fn() } }));
-vi.mock('../src/providers/claude', () => ({ claudeProvider: { streamText: vi.fn(), analyze: vi.fn() } }));
 vi.mock('../src/db', () => ({ searchRelevant: vi.fn() }));
 
 import { config } from '../src/config';
 import { searchRelevant } from '../src/db';
 import * as backend from '../src/internal-client';
 import { createInternalRouter } from '../src/internal-api';
-import { claudeProvider } from '../src/providers/claude';
 import { ollamaProvider } from '../src/providers/ollama';
 import type { Provider } from '../src/providers/types';
 
 const ollama = vi.mocked(ollamaProvider);
-const claude = vi.mocked(claudeProvider);
 const search = vi.mocked(searchRelevant);
 
 const usage = { promptTokens: 3, completionTokens: 2, tokensPerSecond: 10 };
@@ -89,20 +86,13 @@ describe('generate', () => {
     expect(tokens).toEqual(['Hel', 'lo', '\n', ' world']);
     expect(result).toEqual({ text: 'Hello\n world', model: 'qwen', usage });
     expect(ollama.streamText).toHaveBeenCalledWith('qwen', question, expect.any(Function), expect.any(AbortSignal));
-    expect(claude.streamText).not.toHaveBeenCalled();
-  });
-
-  it('sends Claude models to the Claude provider', async () => {
-    claude.streamText.mockImplementation(streamsTokens('ok'));
-    expect((await backend.generate('claude-haiku-4-5', question, async () => {})).text).toBe('ok');
-    expect(ollama.streamText).not.toHaveBeenCalled();
   });
 
   it('reports permanent provider failures as unrecoverable', async () => {
-    claude.streamText.mockRejectedValue(new UnrecoverableError('Claude declined this request.'));
-    const error = await backend.generate('claude-opus-5-5', question, async () => {}).catch((e) => e);
+    ollama.streamText.mockRejectedValue(new UnrecoverableError('Data extraction layout violation: bad JSON'));
+    const error = await backend.generate('qwen', question, async () => {}).catch((e) => e);
     expect(error).toBeInstanceOf(UnrecoverableError);
-    expect(error.message).toBe('Claude declined this request.');
+    expect(error.message).toBe('Data extraction layout violation: bad JSON');
   });
 
   it('reports other failures as retryable, after the tokens already sent', async () => {

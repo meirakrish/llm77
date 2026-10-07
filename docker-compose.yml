@@ -61,8 +61,6 @@ services:
       # A small default model that runs well on a CPU; set LLM_MODEL in .env for a bigger one
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
       EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CLAUDE_MODELS: ${CLAUDE_MODELS:-claude-opus-5-5,claude-haiku-4-5}
       CHUNK_SIZE: ${CHUNK_SIZE:-1000}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
       RAG_TOP_K: ${RAG_TOP_K:-3}
@@ -88,7 +86,6 @@ services:
     environment:
       <<: *backend-env
       API_URL: http://api:3000
-      CLOUD_CONCURRENCY: ${CLOUD_CONCURRENCY:-4}
     depends_on:
       redis:
         condition: service_healthy

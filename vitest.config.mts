@@ -8,7 +8,6 @@ export default defineConfig({
       INTERNAL_API_TOKEN: 'test-token',
       LLM_MODEL: 'test-llm',
       EMBED_MODEL: 'test-embed',
-      CLAUDE_MODELS: 'claude-opus-5-5,claude-haiku-4-5',
       CHUNK_SIZE: '1000',
       CHUNK_OVERLAP: '150',
       RAG_TOP_K: '3',

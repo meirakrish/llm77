@@ -1,6 +1,5 @@
 import type { Redis } from 'ioredis';
 import { config } from './config';
-import { isClaudeModel } from './events';
 
 // One record per finished job, kept in a Redis Stream (entry IDs are timestamps) for the stats dashboard.
 // Unlike BullMQ's job history, which keeps completed jobs for a day, these last METRICS_RETENTION_DAYS.
@@ -21,7 +20,6 @@ export interface JobRecord {
   promptTokens?: number;
   completionTokens?: number;
   tokensPerSecond?: number;
-  costUsd?: number;
 }
 
 export const kindOf = (jobName: string): JobKind => (jobName === 'analyze-text' ? 'analyze' : 'generate');
@@ -71,7 +69,6 @@ function performance(records: StampedRecord[]) {
   return {
     promptTokens: sum(done.map((r) => r.promptTokens)),
     completionTokens: sum(done.map((r) => r.completionTokens)),
-    costUsd: Number(sum(done.map((r) => r.costUsd)).toFixed(6)),
     medianTokensPerSecond: round(percentile(done.flatMap((r) => (r.tokensPerSecond ? [r.tokensPerSecond] : [])), 50), 1),
     p50ExecutionMs: round(percentile(executions, 50)),
     p95ExecutionMs: round(percentile(executions, 95)),
@@ -93,7 +90,7 @@ export async function getStats(redis: Redis, range: StatsRange) {
 
   const models = [...new Set(records.map((r) => r.model))].map((model) => {
     const own = records.filter((r) => r.model === model);
-    return { model, provider: isClaudeModel(model) ? 'claude' : 'ollama', ...counts(own), ...performance(own) };
+    return { model, ...counts(own), ...performance(own) };
   });
   models.sort((a, b) => b.jobs - a.jobs || a.model.localeCompare(b.model));
 

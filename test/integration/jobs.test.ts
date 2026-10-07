@@ -2,7 +2,6 @@ import { UnrecoverableError } from 'bullmq';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { searchRelevant } from '../../src/db';
 import { jobEventsKey } from '../../src/events';
-import { claudeProvider } from '../../src/providers/claude';
 import { ollamaProvider } from '../../src/providers/ollama';
 import { gate, modelsInfo, streamsTokens, usage } from './fixtures';
 import { client, startStack, type Stack } from './stack';
@@ -19,7 +18,6 @@ afterAll(() => stack?.stop());
 afterEach(() => stack.waitForIdle());
 
 const ollama = vi.mocked(ollamaProvider);
-const claude = vi.mocked(claudeProvider);
 
 describe('service status', () => {
   it('reports the API healthy', async () => {
@@ -30,13 +28,12 @@ describe('service status', () => {
     await vi.waitFor(async () => expect((await api.get('/api/info')).body).toMatchObject({ workerOnline: true, ...modelsInfo }));
   });
 
-  it('lists local and enabled Claude models', async () => {
+  it('lists the installed models', async () => {
     const { body } = await api.get('/api/models');
     expect(body.defaultModel).toBe('test-llm');
     expect(body.models).toEqual([
-      { id: 'test-llm', name: 'test-llm', provider: 'ollama' },
-      { id: 'qwen', name: 'qwen', provider: 'ollama' },
-      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', inputPrice: 1, outputPrice: 5, provider: 'claude' }
+      { id: 'test-llm', name: 'test-llm' },
+      { id: 'qwen', name: 'qwen' }
     ]);
   });
 });
@@ -72,11 +69,10 @@ describe('streaming', () => {
     expect(events.at(-1)!.data.sources).toEqual([chunk]);
   });
 
-  it('runs Claude models on the cloud queue', async () => {
-    const { events } = await api.stream({ prompt: 'hi', model: 'claude-haiku-4-5' });
-    expect(events[0].data.jobId).toMatch(/^cloud-/);
-    expect(events.at(-1)).toMatchObject({ event: 'done', data: { text: 'Hi from Claude', model: 'claude-haiku-4-5' } });
-    expect(ollama.streamText).not.toHaveBeenCalled();
+  it('runs the requested model', async () => {
+    const { events } = await api.stream({ prompt: 'hi', model: 'qwen' });
+    expect(events.at(-1)).toMatchObject({ event: 'done', data: { text: 'Hello world', model: 'qwen' } });
+    expect(ollama.streamText).toHaveBeenCalledWith('qwen', expect.any(Array), expect.any(Function), expect.any(AbortSignal));
   });
 
   it('reports a failure as an error event without retrying', async () => {
@@ -160,10 +156,10 @@ describe('queued jobs', () => {
   });
 
   it('does not retry a permanent failure', async () => {
-    claude.streamText.mockRejectedValue(new UnrecoverableError('Claude declined this request.'));
-    const { body } = await api.post('/api/jobs', { prompt: 'hi', model: 'claude-haiku-4-5' });
-    expect(await api.waitForJob(body.jobId)).toMatchObject({ status: 'failed', failedReason: 'Claude declined this request.' });
-    expect(claude.streamText).toHaveBeenCalledTimes(1);
+    ollama.streamText.mockRejectedValue(new UnrecoverableError('Model output was invalid.'));
+    const { body } = await api.post('/api/jobs', { prompt: 'hi' });
+    expect(await api.waitForJob(body.jobId)).toMatchObject({ status: 'failed', failedReason: 'Model output was invalid.' });
+    expect(ollama.streamText).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -171,8 +167,7 @@ describe('queued jobs', () => {
     [{ messages: [{ role: 'assistant', content: 'hi' }] }, 'Message 1 must have role "user": turns alternate, starting with the user.'],
     [{ prompt: 'hi', model: 42 }, 'model must be a string.'],
     [{ prompt: 'hi', model: 'llama9' }, 'Model llama9 is not installed in Ollama.'],
-    [{ prompt: 'hi', model: 'claude-unknown' }, 'Model claude-unknown is not enabled.'],
-    [{ prompt: 'hi', model: 'claude-opus-5-5' }, 'Model claude-opus-5-5 is not available: not accessible with the configured credentials']
+    [{ prompt: 'hi', model: 'claude-opus-5-5' }, 'Model claude-opus-5-5 is not installed in Ollama.']
   ])('rejects %j', async (request, error) => {
     expect(await api.post('/api/jobs', request)).toEqual({ status: 400, body: { error } });
     expect((await api.stream(request)).body).toEqual({ error });
@@ -180,7 +175,6 @@ describe('queued jobs', () => {
 
   it('returns 404 for an unknown job', async () => {
     expect((await api.get('/api/jobs/12345678')).status).toBe(404);
-    expect((await api.get('/api/jobs/cloud-nope')).status).toBe(404);
   });
 });
 

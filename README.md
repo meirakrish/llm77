@@ -13,8 +13,7 @@ A production-grade, asynchronous backend architecture built with **Node.js, Type
    ┌────────────────────┴────────────────────┐      ┌──────────────────────────┐
    │        Node.js / TypeScript API         ├─────►│ Ollama (generation and   │
    │   (Express; the only process that       │      │ embeddings)              │
-   │    talks to models & the vector store)  ├─────►│ Anthropic API (Claude)   │
-   │                                         ├─────►│ LanceDB (in-process)     │
+   │    talks to models & the vector store)  ├─────►│ LanceDB (in-process)     │
    └──┬──────────────────────────▲───────▲───┘      └──────────────────────────┘
       │                          │       │
   Publish Job              Poll / Stream │ /internal API (token-protected):
@@ -27,12 +26,12 @@ A production-grade, asynchronous backend architecture built with **Node.js, Type
       ▼                                  │
    ┌─────────────────────────────────────┴───┐
    │         Asynchronous Worker             │
-   │  Orchestrates jobs: local queue at      │
-   │  concurrency 1, Claude queue in parallel│
+   │  Orchestrates jobs at concurrency 1     │
+   │  (one GPU job at a time)                │
    └─────────────────────────────────────────┘
 ```
 
-The worker never contacts Ollama, Anthropic or LanceDB itself: it asks the backend's `/internal` API, authenticated with a shared `INTERNAL_API_TOKEN`. The backend holds all service credentials and stops a model call if the worker that asked for it disconnects.
+The worker never contacts Ollama or LanceDB itself: it asks the backend's `/internal` API, authenticated with a shared `INTERNAL_API_TOKEN`. The backend holds all service credentials and stops a model call if the worker that asked for it disconnects.
 
 ## 🚀 Core Features & Architectural Solutions
 
@@ -162,17 +161,6 @@ The API and worker read their settings from environment variables; the defaults 
 | `RAG_MAX_DISTANCE` | `0.45` | Backend only: cosine distance cutoff (0 = identical); farther chunks are left out of the prompt. Use the frontend's *Test retrieval* to tune it |
 | `METRICS_RETENTION_DAYS` | `30` | How long finished-job records are kept for the stats dashboard |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
-| `ANTHROPIC_API_KEY` | *(none)* | Backend only: enables Claude models (an `ant auth login` profile also works) |
-| `CLAUDE_MODELS` | `claude-opus-5-5,claude-haiku-4-5` | Backend only: Claude models users may pick |
-| `CLOUD_CONCURRENCY` | `4` | How many Claude jobs the worker runs at once |
-
-### 5. Claude Models (optional)
-Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **backend's** environment (e.g. in `.env`) and restart it. `GET /api/models` then lists the Claude models from `CLAUDE_MODELS` that the key can access, and API clients can request them by name. The frontend doesn't offer them: it sticks to free local models.
-
-* **Data leaves your machine:** a Claude prompt, including any matching knowledge-base context, is sent to Anthropic's API. Local models keep everything local.
-* **Billed per token:** Claude Opus 5.5 costs $4 / $20 and Claude Haiku 4.5 $1 / $5 per million input / output tokens; each job's metrics include its cost.
-* **Ollama is still required:** Claude has no embeddings API, so knowledge-base search keeps using `EMBED_MODEL`.
-* Claude jobs use their own queue (`<QUEUE_NAME>-cloud`) and run in parallel, so they never wait behind local GPU jobs. Claude Opus 5.5 runs at low effort and with server-side refusal fallbacks; a request Claude declines fails with a clear message.
 
 Queued jobs retry up to 3 times with exponential backoff, except streams and schema violations, which fail immediately. Completed jobs stay pollable for 24 hours and failed jobs for 7 days. Both processes shut down gracefully on `SIGINT`/`SIGTERM`; the worker finishes its active job first. If the backend restarts mid-generation, the worker's job fails and is retried like any transient error.
 
@@ -264,20 +252,20 @@ curl http://localhost:3000/api/jobs/<jobId>
 ```
 
 ### 5. Worker & Model Info
-`GET /api/models` lists the models a prompt can run on (local models plus available Claude models, with prices). `GET /api/info` reports the models the running worker actually uses (name, family, size, quantization, digest) and the Ollama version. The worker refreshes this every 30 seconds; `workerOnline` becomes `false` within a minute if no worker is running. The frontend shows it under the title and tags each result with the model that produced it.
+`GET /api/models` lists the models a prompt can run on (the installed Ollama models that can generate text). `GET /api/info` reports the models the running worker actually uses (name, family, size, quantization, digest) and the Ollama version. The worker refreshes this every 30 seconds; `workerOnline` becomes `false` within a minute if no worker is running. The frontend shows it under the title and tags each result with the model that produced it.
 ```bash
 curl http://localhost:3000/api/info
 ```
 
 ### 6. Usage Stats
-Every finished job (completed, failed after its last retry, or cancelled) is recorded in a Redis Stream and kept for `METRICS_RETENTION_DAYS`, independently of BullMQ's own job history (which keeps completed jobs for a day). `GET /api/stats?range=24h|7d|30d` summarizes them: totals, a per-model breakdown (jobs by outcome, median tokens per second, median and p95 run and queue times, tokens, cost) and a timeline of jobs per period. Speed and timing figures come from completed jobs only.
+Every finished job (completed, failed after its last retry, or cancelled) is recorded in a Redis Stream and kept for `METRICS_RETENTION_DAYS`, independently of BullMQ's own job history (which keeps completed jobs for a day). `GET /api/stats?range=24h|7d|30d` summarizes them: totals, a per-model breakdown (jobs by outcome, median tokens per second, median and p95 run and queue times, tokens) and a timeline of jobs per period. Speed and timing figures come from completed jobs only.
 ```bash
 curl "http://localhost:3000/api/stats?range=7d"
 ```
 
 ## 🧪 Tests & CI
 
-Tests use Vitest and come in two sets. Neither needs Ollama, Claude or LanceDB: models, the knowledge base and model discovery are mocked.
+Tests use Vitest and come in two sets. Neither needs Ollama or LanceDB: models, the knowledge base and model discovery are mocked.
 
 * **Unit tests** (`test/*.test.ts`) need no services: chunking, conversation handling, file text extraction, usage stats, the Ollama provider, and the worker's `/internal` client against the backend's router.
 * **Integration tests** (`test/integration`) run the real API and workers in-process against Redis: streaming and resuming jobs, polling, retries and permanent failures, cancelling running and waiting jobs, queue positions, usage stats and the knowledge base routes. They need a Redis used only for tests: each run uses its own queue name and deletes its keys afterwards, but local job IDs are counters that can repeat another instance's.
@@ -320,10 +308,10 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
     ├── internal-protocol.ts # Request/response types shared by both sides of /internal
     ├── job-stream.ts     # Backend: replays and follows a job's events as SSE, with queue position
     ├── metrics.ts        # Per-job records and the stats summary
-    ├── model-info.ts     # Backend: model discovery (Ollama models, Claude availability)
+    ├── model-info.ts     # Backend: model discovery (installed Ollama models)
     ├── ollama-client.ts  # Backend: Ollama client
-    ├── providers         # Backend: Ollama and Claude implementations of text generation & analysis
+    ├── providers         # Backend: Ollama text generation & analysis
     ├── schema.ts         # Zod data structures & type inferences
     ├── worker.ts         # Worker entry point: starts the workers, shuts down gracefully
-    └── workers.ts        # Worker: BullMQ job processing for the local and cloud queues, heartbeats, cancellation
+    └── workers.ts        # Worker: BullMQ job processing, heartbeats, cancellation
 ```

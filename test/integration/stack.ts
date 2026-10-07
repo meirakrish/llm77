@@ -26,7 +26,6 @@ export async function startStack({ workers = true } = {}): Promise<Stack> {
     throw new Error('Set TEST_REDIS_URL to a Redis used only for tests, e.g. docker run --rm -p 6390:6379 redis:7-alpine');
   }
   config.queueName = `it-${crypto.randomUUID().slice(0, 8)}`;
-  config.cloudQueueName = `${config.queueName}-cloud`;
 
   const redis = new IORedis(config.redisUrl, { maxRetriesPerRequest: null });
   const api = createApp(redis);
@@ -36,7 +35,7 @@ export async function startStack({ workers = true } = {}): Promise<Stack> {
   config.apiUrl = url;
   const running = workers ? startWorkers() : null;
   const jobIds = new Set<string>();
-  const queues = [config.queueName, config.cloudQueueName].map((name) => new Queue(name, { connection: redis }));
+  const queues = [config.queueName].map((name) => new Queue(name, { connection: redis }));
 
   return {
     url,

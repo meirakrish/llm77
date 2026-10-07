@@ -1,7 +1,7 @@
 import { getModels } from './api';
 import type { ModelOption } from './types';
 
-// Local Ollama models a prompt can run on (the backend can also offer Claude models; the UI leaves them out), shared by every picker and refreshed while any of them is shown
+// Local Ollama models a prompt can run on, shared by every picker and refreshed while any of them is shown
 class Models {
   list = $state<ModelOption[]>([]);
   defaultModel = $state<string | null>(null);
@@ -13,7 +13,7 @@ class Models {
   async refresh() {
     try {
       const res = await getModels();
-      this.list = res.models.filter((m) => m.provider === 'ollama');
+      this.list = res.models;
       this.defaultModel = res.defaultModel;
       // The backend lists models even while the worker is down; queued jobs wait for it
       this.status = 'ready';

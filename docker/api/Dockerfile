@@ -1,5 +1,5 @@
 # API image: Express, the LanceDB knowledge base (an embedded library: its data is files under
-# LANCEDB_DIR, so mount a persistent volume there), PDF parsing and the Anthropic SDK.
+# LANCEDB_DIR, so mount a persistent volume there) and PDF parsing.
 # Build from the repository root: docker build -f docker/api/Dockerfile -t llm77-api .
 # Debian rather than Alpine: LanceDB's native module is built against glibc.
 
