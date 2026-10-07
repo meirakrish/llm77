@@ -38,7 +38,6 @@
       <dd><span class="dot off"></span>Backend unreachable</dd>
     {:else}
       {#if info.llmModel}{@render modelRow('Model', info.llmModel)}{/if}
-      {#if info.embedModel}{@render modelRow('Embeddings', info.embedModel)}{/if}
       <dt>Ollama</dt>
       <dd>
         <span class="dot" class:ok={!info.error} class:off={!!info.error}></span>
