@@ -30,6 +30,30 @@ jobs:
       - run: npm run build
       - run: npm run build:worker
 
+  integration:
+    name: Backend integration tests (Redis)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+
   frontend:
     name: Frontend (svelte-check, build)
     runs-on: ubuntu-latest

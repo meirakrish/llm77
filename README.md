@@ -277,12 +277,20 @@ curl "http://localhost:3000/api/stats?range=7d"
 
 ## 🧪 Tests & CI
 
-The backend has unit tests (Vitest) for chunking, conversation handling, file text extraction, usage stats and the Ollama provider, plus round-trip tests of the worker's `/internal` client against the backend's router. They mock Ollama, Claude and the knowledge base, so they need no running services:
+Tests use Vitest and come in two sets. Neither needs Ollama, Claude or LanceDB: models, the knowledge base and model discovery are mocked.
+
+* **Unit tests** (`test/*.test.ts`) need no services: chunking, conversation handling, file text extraction, usage stats, the Ollama provider, and the worker's `/internal` client against the backend's router.
+* **Integration tests** (`test/integration`) run the real API and workers in-process against Redis: streaming and resuming jobs, polling, retries and permanent failures, cancelling running and waiting jobs, queue positions, usage stats and the knowledge base routes. They need a Redis used only for tests: each run uses its own queue name and deletes its keys afterwards, but local job IDs are counters that can repeat another instance's.
+
 ```bash
-npm test             # run once (npm run test:watch to re-run on changes)
-npm run typecheck    # type-check the sources and the tests
+npm test                # unit tests (npm run test:watch to re-run on changes)
+npm run typecheck       # type-check the sources and the tests
+
+docker run -d --rm --name llm77-test-redis -p 127.0.0.1:6390:6379 redis:7-alpine
+TEST_REDIS_URL=redis://127.0.0.1:6390 npm run test:integration
+docker stop llm77-test-redis
 ```
-GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: backend type check, tests and builds; frontend `svelte-check` and build; and a build of each Docker image (nothing is pushed).
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: backend type check, unit tests and builds; integration tests against a Redis service container; frontend `svelte-check` and build; and a build of each Docker image (nothing is pushed).
 
 ## 📁 Project Directory Layout
 
@@ -296,16 +304,17 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
 │   └── src
 │       ├── App.svelte    # Page layout: Workbench (composer & history) and Knowledge base tabs
 │       └── lib           # Components, API client, persisted history store
-├── test                  # Backend tests (Vitest; settings in vitest.config.mts)
+├── test                  # Backend unit tests, and integration tests in test/integration (Vitest; settings in vitest.config.mts)
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
+    ├── app.ts            # Backend: the Express app (public API routes, /internal router) and its queues
     ├── chunking.ts       # Splits documents into overlapping chunks
     ├── chat.ts           # Conversation validation and knowledge base grounding
     ├── config.ts         # Environment-driven settings
     ├── db.ts             # Backend: LanceDB knowledge base (documents, chunks, relevance search)
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
     ├── extract.ts        # Backend: text extraction from uploaded files (incl. PDF)
-    ├── index.ts          # Express Server API interface definitions
+    ├── index.ts          # Backend entry point: connects to Redis, serves app.ts, shuts down gracefully
     ├── internal-api.ts   # Backend: token-protected /internal endpoints the worker calls
     ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints
     ├── internal-protocol.ts # Request/response types shared by both sides of /internal
@@ -315,5 +324,6 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
     ├── ollama-client.ts  # Backend: Ollama client
     ├── providers         # Backend: Ollama and Claude implementations of text generation & analysis
     ├── schema.ts         # Zod data structures & type inferences
-    └── worker.ts         # BullMQ queue execution worker routine
+    ├── worker.ts         # Worker entry point: starts the workers, shuts down gracefully
+    └── workers.ts        # Worker: BullMQ job processing for the local and cloud queues, heartbeats, cancellation
 ```
