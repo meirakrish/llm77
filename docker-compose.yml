@@ -1,0 +1,117 @@
+# The whole stack with one command: docker compose up --build
+# Each part is its own image (docker/<name>/Dockerfile), so they can also be deployed separately.
+# Then open http://localhost:8080. Settings come from .env (INTERNAL_API_TOKEN is required; see README).
+#
+# Optional overrides, enabled by listing them in COMPOSE_FILE in .env:
+#   docker-compose.gpu.yml          run Ollama on an NVIDIA GPU (official CUDA image)
+#   docker-compose.host-ollama.yml  use the Ollama already running on this machine instead of the bundled one
+
+x-backend: &backend
+  restart: unless-stopped
+  init: true
+  environment: &backend-env
+    REDIS_URL: redis://redis:6379
+    QUEUE_NAME: ${QUEUE_NAME:-llm-processing}
+    INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Set INTERNAL_API_TOKEN in .env (see README)}
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  # Each image defines its own health check, which the depends_on conditions below rely on
+  redis:
+    build: docker/redis
+    image: llm77-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+
+  # Slim CPU-only build of Ollama (see docker/ollama/Dockerfile); docker-compose.gpu.yml swaps in the official CUDA image
+  ollama:
+    build: docker/ollama
+    image: llm77-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/models
+
+  # Downloads the models on first start (skipped quickly once they are in the volume), then exits
+  ollama-pull:
+    # Built by the ollama service above; never looked up on Docker Hub
+    image: llm77-ollama
+    pull_policy: never
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+    entrypoint: ["/bin/sh", "-c", "ollama pull \"$$LLM_MODEL\" && ollama pull \"$$EMBED_MODEL\""]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: llm77-api
+    environment:
+      <<: *backend-env
+      OLLAMA_HOST: http://ollama:11434
+      # A small default model that runs well on a CPU; set LLM_MODEL in .env for a bigger one
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:0.5b}
+      EMBED_MODEL: ${EMBED_MODEL:-nomic-embed-text}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_MODELS: ${CLAUDE_MODELS:-claude-opus-5-5,claude-haiku-4-5}
+      CHUNK_SIZE: ${CHUNK_SIZE:-1000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
+      RAG_TOP_K: ${RAG_TOP_K:-3}
+      RAG_MAX_DISTANCE: ${RAG_MAX_DISTANCE:-0.45}
+      METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-30}
+    volumes:
+      - lancedb-data:/data/lancedb
+    ports:
+      # Published for curl and scripts; the frontend reaches the API inside the network
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully
+
+  worker:
+    <<: *backend
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+    image: llm77-worker
+    environment:
+      <<: *backend-env
+      API_URL: http://api:3000
+      CLOUD_CONCURRENCY: ${CLOUD_CONCURRENCY:-4}
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    # Give the active job time to finish on shutdown (the worker waits for it)
+    stop_grace_period: 2m
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    image: llm77-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+  # Models live at /models (OLLAMA_MODELS) and belong to the image's unprivileged user
+  ollama-models:
+    name: llm77_ollama-data
+  lancedb-data:

@@ -1,0 +1,7 @@
+# Images build from the repository root (docker build -f docker/<image>/Dockerfile .): keep out
+# dependencies, build output, local data and secrets
+**/node_modules
+**/dist
+.lancedb
+.env
+.git
