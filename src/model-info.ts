@@ -17,10 +17,11 @@ async function describeModel(name: string, installed: { name: string; digest: st
   };
 }
 
-// Installed models that can generate text; embedding-only models can't answer prompts
-async function listLocalModels(installed: { name: string }[]): Promise<string[]> {
+// Installed models that can generate text (embedding-only models can't answer prompts), and which can read images
+async function listLocalModels(installed: { name: string }[]): Promise<{ localModels: string[]; visionModels: string[] }> {
   const shown = await Promise.all(installed.map((m) => ollama.show({ model: m.name })));
-  return installed.filter((_, i) => shown[i].capabilities?.includes('completion')).map((m) => m.name);
+  const having = (capability: string) => installed.filter((_, i) => shown[i].capabilities?.includes(capability)).map((m) => m.name);
+  return { localModels: having('completion'), visionModels: having('vision').filter((name) => having('completion').includes(name)) };
 }
 
 async function loadModelsInfo(): Promise<ModelsInfo> {
@@ -36,17 +37,17 @@ async function loadModelsInfo(): Promise<ModelsInfo> {
   };
 
   const installed = await attempt(async () => (await ollama.list()).models, []);
-  const [llmModel, embedModel, localModels, ollamaVersion] = await Promise.all([
+  const [llmModel, embedModel, { localModels, visionModels }, ollamaVersion] = await Promise.all([
     attempt(() => describeModel(config.llmModel, installed), { name: config.llmModel }),
     attempt(() => describeModel(config.embedModel, installed), { name: config.embedModel }),
-    attempt(() => listLocalModels(installed), []),
+    attempt(() => listLocalModels(installed), { localModels: [], visionModels: [] }),
     attempt(async () => {
       const res = await fetch(`${config.ollamaHost}/api/version`);
       return ((await res.json()) as { version: string }).version;
     }, null)
   ]);
 
-  const info: ModelsInfo = { llmModel, embedModel, localModels, ollamaVersion, updatedAt: new Date().toISOString() };
+  const info: ModelsInfo = { llmModel, embedModel, localModels, visionModels, ollamaVersion, updatedAt: new Date().toISOString() };
   if (errors.size) info.error = [...errors].join('; ');
   return info;
 }

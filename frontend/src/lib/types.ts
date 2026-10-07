@@ -52,6 +52,21 @@ export interface Analysis {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  // Base64 images for vision models, and documents' extracted text
+  images?: string[];
+  documents?: { name: string; text: string }[];
+}
+
+// A file attached to a question in the Workbench; data and text are what is sent to the model
+export type Attachment = { id: string; name: string } & (
+  | { kind: 'image'; data: string; preview: string }
+  | { kind: 'document'; text: string }
+);
+
+// What history saves about an attachment; the contents are kept in memory only, so a reload drops them
+export interface AttachmentInfo {
+  name: string;
+  kind: 'image' | 'document';
 }
 
 // One generation by one model: a turn of an Ask conversation, or one model's answer in a Compare
@@ -59,6 +74,7 @@ export interface Run {
   id: string;
   // The question this run answers
   input: string;
+  attachments?: AttachmentInfo[];
   // The model the user picked (unset means the worker's default local model)
   requestedModel?: string;
   status: Status;
@@ -97,6 +113,8 @@ export interface CompareEntry extends BaseEntry {
 // A structured analysis, or knowledge added by the Workbench's former Add knowledge mode
 export interface JobEntry extends BaseEntry {
   mode: 'analyze' | 'seed';
+  // Documents whose text was analyzed along with the input
+  attachments?: AttachmentInfo[];
   status: Status;
   text: string;
   jobId?: string;
@@ -121,6 +139,8 @@ export interface ModelInfo {
 export interface ModelOption {
   id: string;
   name: string;
+  // Can read images
+  vision?: boolean;
 }
 
 // A model download running on the backend (see GET /api/models/pulls)

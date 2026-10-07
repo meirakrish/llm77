@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../src/ollama-client', () => ({ ollama: { chat: vi.fn(), generate: vi.fn() } }));
 
 import { ollama } from '../src/ollama-client';
-import { ollamaProvider } from '../src/providers/ollama';
+import { contextFor, ollamaProvider } from '../src/providers/ollama';
 
 const chat = vi.mocked(ollama.chat) as unknown as ReturnType<typeof vi.fn>;
 const generate = vi.mocked(ollama.generate) as unknown as ReturnType<typeof vi.fn>;
@@ -42,6 +42,16 @@ describe('ollamaProvider.streamText', () => {
     expect(tokens).toEqual(['Hi', ' there']);
     expect(result).toEqual({ text: 'Hi there', model: 'qwen', usage: { promptTokens: 12, completionTokens: 50, tokensPerSecond: 25 } });
     expect(chat).toHaveBeenCalledWith({ model: 'qwen', messages: [{ role: 'user', content: 'hello' }], stream: true });
+  });
+
+  it('sends images, inlines documents and widens the context for long prompts', async () => {
+    chat.mockResolvedValue(chatStream(['ok']));
+    const text = 'x'.repeat(30_000);
+    await ollamaProvider.streamText('seer', [{ role: 'user', content: 'Compare', images: ['aGVsbG8='], documents: [{ name: 'a.txt', text }] }], async () => {});
+
+    const request = chat.mock.calls[0][0];
+    expect(request.messages).toEqual([{ role: 'user', content: expect.stringContaining(`<file>\n${text}\n</file>\n\nCompare`), images: ['aGVsbG8='] }]);
+    expect(request.options).toEqual({ num_ctx: 11264 });
   });
 
   it('aborts the Ollama request when the signal fires', async () => {
@@ -102,5 +112,18 @@ describe('ollamaProvider.analyze', () => {
     controller.abort();
     await pending.catch(() => {});
     expect(stream.abort).toHaveBeenCalled();
+  });
+});
+
+describe('contextFor', () => {
+  const ask = (chars: number) => [{ role: 'user' as const, content: 'x'.repeat(chars) }];
+
+  it("keeps Ollama's default for short prompts", () => {
+    expect(contextFor(ask(9000))).toBeUndefined();
+  });
+
+  it('rounds up to fit longer prompts, up to the configured maximum', () => {
+    expect(contextFor(ask(12_000))).toBe(5120);
+    expect(contextFor(ask(1_000_000))).toBe(16384);
   });
 });

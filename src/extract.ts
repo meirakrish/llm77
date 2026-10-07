@@ -5,6 +5,9 @@ import { PDFParse } from 'pdf-parse';
 export const TEXT_EXTENSIONS = ['.txt', '.md', '.markdown', '.csv', '.log'];
 export const SUPPORTED_EXTENSIONS = [...TEXT_EXTENSIONS, '.pdf'];
 
+// Longest text that can be attached to a question; longer documents belong in the knowledge base
+export const MAX_ATTACHMENT_CHARS = 100_000;
+
 // Thrown for files we can't read; the message is safe to show to the user
 export class UnsupportedFileError extends Error {}
 

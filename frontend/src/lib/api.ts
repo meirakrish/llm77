@@ -114,6 +114,12 @@ export async function uploadDocument(file: File): Promise<DocumentSummary> {
   return (await res.json()).document;
 }
 
+// The text of a file to attach to a question; nothing is stored
+export async function extractText(file: File): Promise<string> {
+  const res = await request(`/api/extract?filename=${encodeURIComponent(file.name)}`, { method: 'POST', body: file });
+  return (await res.json()).text;
+}
+
 export async function listDocuments(): Promise<DocumentSummary[]> {
   return (await (await request('/api/documents')).json()).documents;
 }

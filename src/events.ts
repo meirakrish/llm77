@@ -35,6 +35,8 @@ export interface ModelsInfo {
   embedModel: ModelInfo;
   // Installed Ollama models that can generate text (embedding-only models excluded)
   localModels: string[];
+  // Those of them that can read images
+  visionModels: string[];
   ollamaVersion: string | null;
   updatedAt: string;
   error?: string;

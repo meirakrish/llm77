@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseMessages, retrievalQuery, withContext } from '../src/chat';
+import { inlineDocuments, parseMessages, retrievalQuery, withContext } from '../src/chat';
 import type { ContextChunk } from '../src/db';
 import type { ChatMessage } from '../src/providers/types';
 
@@ -13,6 +13,35 @@ describe('parseMessages', () => {
 
   it('drops fields other than role and content', () => {
     expect(parseMessages([{ role: 'user', content: 'hi', extra: true }])).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('keeps images and documents attached to user turns', () => {
+    const messages = [{ role: 'user', content: 'What is this?', images: ['aGVsbG8='], documents: [{ name: 'a.md', text: 'Alpha' }] }];
+    expect(parseMessages(messages)).toEqual(messages);
+  });
+
+  it('leaves out empty attachment lists', () => {
+    expect(parseMessages([{ role: 'user', content: 'hi', images: [], documents: [] }])).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
+  it('counts attached documents toward the length limit', () => {
+    const result = parseMessages([{ role: 'user', content: 'hi', documents: [{ name: 'big.txt', text: 'x'.repeat(200_000) }] }]);
+    expect(result).toEqual({ error: expect.stringContaining('too long') });
+  });
+
+  it.each([
+    ['images that are not an array', { images: 'aGVsbG8=' }, 'images must be an array'],
+    ['an image that is not base64', { images: ['data:image/png;base64,aGVsbG8='] }, 'base64-encoded'],
+    ['too many images', { images: Array(5).fill('aGVsbG8=') }, 'at most 4 images'],
+    ['a document without text', { documents: [{ name: 'a.md', text: ' ' }] }, 'needs a name and non-empty text'],
+    ['too many documents', { documents: Array(6).fill({ name: 'a', text: 'b' }) }, 'at most 5 documents']
+  ])('rejects %s', (_name, attachments, error) => {
+    expect(parseMessages([{ role: 'user', content: 'hi', ...attachments }])).toEqual({ error: expect.stringContaining(error) });
+  });
+
+  it('rejects attachments on assistant turns', () => {
+    const result = parseMessages([{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'a', images: ['aGVsbG8='] }, { role: 'user', content: 'b' }]);
+    expect(result).toEqual({ error: 'Message 2: only user messages can have attachments.' });
   });
 
   it.each([
@@ -63,5 +92,27 @@ describe('withContext', () => {
     expect(result[2].content).toContain('[2] (from "b.md") Beta text');
     expect(result[2].content).toMatch(/Question:\nsecond$/);
     expect(messages[2].content).toBe('second');
+  });
+
+  it('keeps the question\'s attachments', () => {
+    const messages: ChatMessage[] = [{ role: 'user', content: 'q', images: ['aGVsbG8='], documents: [{ name: 'a.md', text: 'A' }] }];
+    const [grounded] = withContext(messages, [chunk('b.md', 'Beta')]);
+    expect(grounded).toMatchObject({ images: ['aGVsbG8='], documents: [{ name: 'a.md', text: 'A' }] });
+  });
+});
+
+describe('inlineDocuments', () => {
+  it('puts each attached file in front of the question', () => {
+    const message: ChatMessage = { role: 'user', content: 'Summarize these', images: ['aGVsbG8='], documents: [{ name: 'a.md', text: ' Alpha \n' }, { name: 'b.pdf', text: 'Beta' }] };
+    expect(inlineDocuments(message)).toEqual({
+      role: 'user',
+      content: 'Attached file "a.md":\n<file>\nAlpha\n</file>\n\nAttached file "b.pdf":\n<file>\nBeta\n</file>\n\nSummarize these',
+      images: ['aGVsbG8=']
+    });
+  });
+
+  it('leaves messages without documents alone', () => {
+    const message: ChatMessage = { role: 'user', content: 'hi' };
+    expect(inlineDocuments(message)).toBe(message);
   });
 });

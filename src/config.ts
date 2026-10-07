@@ -15,6 +15,8 @@ export const config = {
   // How many chunks to add to a prompt, and how close (cosine distance, 0 = identical) they must be to count as relevant
   ragTopK: Number(process.env.RAG_TOP_K ?? 3),
   ragMaxDistance: Number(process.env.RAG_MAX_DISTANCE ?? 0.45),
+  // Long prompts (e.g. an attached document) get a context window this large at most; more uses more memory
+  maxContextTokens: Number(process.env.MAX_CONTEXT_TOKENS ?? 16384),
   // How long finished-job records are kept for the stats dashboard
   metricsRetentionDays: Number(process.env.METRICS_RETENTION_DAYS ?? 30),
   // Comma-separated frontend origins allowed to call the API from a browser, or '*' for any; empty allows none

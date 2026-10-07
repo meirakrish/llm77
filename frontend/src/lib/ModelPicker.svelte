@@ -31,7 +31,7 @@
   <select id="model" bind:value disabled={status !== 'ready'}>
     {#if status === 'ready'}
       <option value="">Default{models.defaultModel ? ` (${models.defaultModel})` : ''}</option>
-      {#each models.list as m (m.id)}<option value={m.id}>{m.name}</option>{/each}
+      {#each models.list as m (m.id)}<option value={m.id}>{m.name}{m.vision ? ' · vision' : ''}</option>{/each}
     {:else if status === 'loading'}
       <option value={value}>Loading models…</option>
     {:else}

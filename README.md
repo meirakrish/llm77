@@ -117,7 +117,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four local models side by side on the same question (speed and tokens per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). A Models tab downloads new Ollama models with live progress and lets you pick one for the Workbench. Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, optionally with attached images and documents, with the knowledge base sources each answer used), comparing up to four local models side by side on the same question (speed and tokens per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). A Models tab downloads new Ollama models with live progress and lets you pick one for the Workbench. Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -155,6 +155,7 @@ The API and worker read their settings from environment variables; the defaults 
 | `CHUNK_OVERLAP` | `150` | Backend only: characters each chunk repeats from the previous one |
 | `RAG_TOP_K` | `3` | Backend only: most chunks added to an Ask prompt |
 | `RAG_MAX_DISTANCE` | `0.45` | Backend only: cosine distance cutoff (0 = identical); farther chunks are left out of the prompt. Use the frontend's *Test retrieval* to tune it |
+| `MAX_CONTEXT_TOKENS` | `16384` | Backend only: largest context window requested from Ollama for long prompts, such as an attached document (prompts that fit Ollama's default of 4096 tokens leave it alone). Larger windows use more memory |
 | `METRICS_RETENTION_DAYS` | `30` | How long finished-job records are kept for the stats dashboard |
 | `CORS_ORIGINS` | *(none)* | Comma-separated frontend origins allowed to call the API from a browser, or `*` for any |
 
@@ -173,6 +174,11 @@ curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application
 To continue a conversation, send `messages` instead of `prompt`: the turns so far, alternating `user` and `assistant` and ending with the new question. The knowledge base is searched with the newest question plus the one before it, so follow-ups like "what database does it use?" still find what "it" refers to.
 ```bash
 curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d '{"messages": [{"role": "user", "content": "Who built Project Aethelgard?"}, {"role": "assistant", "content": "Alex built it."}, {"role": "user", "content": "What database does it use?"}]}'
+```
+
+A user message can carry attachments: `images` (up to 4 base64-encoded images, without a `data:` prefix) for a vision model, and `documents` (up to 5 `{"name", "text"}` objects) whose text is put in front of the question. Images are refused with a 400 unless the model can read them (`GET /api/models` marks those with `"vision": true`). `POST /api/extract?filename=<name>` returns the text of a file sent as the raw body (the same types as knowledge base uploads, up to 100,000 characters) without storing it; the frontend uses it for attached documents and scales images down to at most 1536 pixels before sending them. Once a job is finished, the worker removes its images from the job kept in Redis.
+```bash
+curl -N -X POST http://localhost:3000/api/stream   -H "Content-Type: application/json"   -d "{\"model\": \"moondream:1.8b\", \"messages\": [{\"role\": \"user\", \"content\": \"What is in this picture?\", \"images\": [\"$(base64 -w0 photo.jpg)\"]}]}"
 ```
 
 To queue the same generation without streaming, `POST /api/jobs` with the same body and poll the returned `jobId` (see section 4). The frontend's Compare mode sends one such request per model.
@@ -305,7 +311,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
     ├── config.ts         # Environment-driven settings
     ├── db.ts             # Backend: LanceDB knowledge base (documents, chunks, relevance search)
     ├── events.ts         # Redis pub/sub channel & SSE stream event types
-    ├── extract.ts        # Backend: text extraction from uploaded files (incl. PDF)
+    ├── extract.ts        # Backend: text extraction from uploaded and attached files (incl. PDF)
     ├── index.ts          # Backend entry point: connects to Redis, serves app.ts, shuts down gracefully
     ├── internal-api.ts   # Backend: token-protected /internal endpoints the worker calls
     ├── internal-client.ts   # Worker: HTTP client for the /internal endpoints
