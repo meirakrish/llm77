@@ -275,10 +275,20 @@ Every finished job (completed, failed after its last retry, or cancelled) is rec
 curl "http://localhost:3000/api/stats?range=7d"
 ```
 
+## 🧪 Tests & CI
+
+The backend has unit tests (Vitest) for chunking, conversation handling, file text extraction, usage stats and the Ollama provider, plus round-trip tests of the worker's `/internal` client against the backend's router. They mock Ollama, Claude and the knowledge base, so they need no running services:
+```bash
+npm test             # run once (npm run test:watch to re-run on changes)
+npm run typecheck    # type-check the sources and the tests
+```
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`: backend type check, tests and builds; frontend `svelte-check` and build; and a build of each Docker image (nothing is pushed).
+
 ## 📁 Project Directory Layout
 
 ```text
 ├── .env.example          # Template for local secrets (copy to .env)
+├── .github/workflows     # CI: type checks, tests, builds and Docker image builds
 ├── docker                # One Dockerfile per image: api, worker, frontend (with nginx.conf), ollama, redis (with redis.conf)
 ├── docker-compose.yml    # Full stack; docker-compose.gpu.yml and docker-compose.host-ollama.yml are optional overrides
 ├── package.json          # Dependencies & development scripts
@@ -286,6 +296,7 @@ curl "http://localhost:3000/api/stats?range=7d"
 │   └── src
 │       ├── App.svelte    # Page layout: Workbench (composer & history) and Knowledge base tabs
 │       └── lib           # Components, API client, persisted history store
+├── test                  # Backend tests (Vitest; settings in vitest.config.mts)
 ├── tsconfig.json         # TypeScript compiler configurations
 └── src
     ├── chunking.ts       # Splits documents into overlapping chunks
