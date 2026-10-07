@@ -1,4 +1,4 @@
-import type { Analysis, ApiInfo, ChatMessage, DocumentDetail, Stats, StatsRange, DocumentSummary, Metrics, ModelsResponse, SearchResult, Source } from './types';
+import type { Analysis, ApiInfo, ChatMessage, DocumentDetail, Stats, StatsRange, DocumentSummary, Metrics, ModelPull, ModelsResponse, SearchResult, Source } from './types';
 
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -143,6 +143,19 @@ export async function getModels(): Promise<ModelsResponse> {
   const res = await fetch(`${API_URL}/api/models`);
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   return res.json();
+}
+
+export async function listPulls(): Promise<ModelPull[]> {
+  return (await (await request('/api/models/pulls')).json()).pulls;
+}
+
+// Start downloading a model into Ollama; progress shows up in listPulls()
+export async function pullModel(model: string): Promise<ModelPull> {
+  return (await (await postJson('/api/models/pulls', { model })).json()).pull;
+}
+
+export async function cancelPull(model: string): Promise<void> {
+  await request(`/api/models/pulls/${encodeURIComponent(model)}`, { method: 'DELETE' });
 }
 
 export async function getInfo(): Promise<ApiInfo> {

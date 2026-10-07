@@ -121,7 +121,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four local models side by side on the same question (speed and tokens per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage. The frontend only offers local Ollama models.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four local models side by side on the same question (speed and tokens per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). A Models tab downloads new Ollama models with live progress and lets you pick one for the Workbench. Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -257,6 +257,12 @@ curl http://localhost:3000/api/jobs/<jobId>
 curl http://localhost:3000/api/info
 ```
 
+**Downloading models:** `POST /api/models/pulls` with `{"model": "llama3.2:1b"}` starts downloading a model into the backend's Ollama (any [Ollama library](https://ollama.com/library) name, or `hf.co/<user>/<repo>` for a GGUF repository) and returns at once. The backend runs the download itself, so it continues if the browser closes, but a backend restart stops it (pulling again resumes it). `GET /api/models/pulls` lists active and recently finished downloads with their progress in bytes, and `DELETE /api/models/pulls/<model>` (URL-encoded) cancels one. A finished model is listed by `GET /api/models` right away, unless it is embedding-only. Anyone who can reach the API can download models, so mind the disk space on a shared server.
+```bash
+curl -X POST http://localhost:3000/api/models/pulls -H 'Content-Type: application/json' -d '{"model": "llama3.2:1b"}'
+curl http://localhost:3000/api/models/pulls
+```
+
 ### 6. Usage Stats
 Every finished job (completed, failed after its last retry, or cancelled) is recorded in a Redis Stream and kept for `METRICS_RETENTION_DAYS`, independently of BullMQ's own job history (which keeps completed jobs for a day). `GET /api/stats?range=24h|7d|30d` summarizes them: totals, a per-model breakdown (jobs by outcome, median tokens per second, median and p95 run and queue times, tokens) and a timeline of jobs per period. Speed and timing figures come from completed jobs only.
 ```bash
@@ -267,7 +273,7 @@ curl "http://localhost:3000/api/stats?range=7d"
 
 Tests use Vitest and come in two sets. Neither needs Ollama or LanceDB: models, the knowledge base and model discovery are mocked.
 
-* **Unit tests** (`test/*.test.ts`) need no services: chunking, conversation handling, file text extraction, usage stats, the Ollama provider, and the worker's `/internal` client against the backend's router.
+* **Unit tests** (`test/*.test.ts`) need no services: chunking, conversation handling, file text extraction, usage stats, model downloads, the Ollama provider, and the worker's `/internal` client against the backend's router.
 * **Integration tests** (`test/integration`) run the real API and workers in-process against Redis: streaming and resuming jobs, polling, retries and permanent failures, cancelling running and waiting jobs, queue positions, usage stats and the knowledge base routes. They need a Redis used only for tests: each run uses its own queue name and deletes its keys afterwards, but local job IDs are counters that can repeat another instance's.
 
 ```bash
@@ -309,6 +315,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
     ├── job-stream.ts     # Backend: replays and follows a job's events as SSE, with queue position
     ├── metrics.ts        # Per-job records and the stats summary
     ├── model-info.ts     # Backend: model discovery (installed Ollama models)
+    ├── model-pulls.ts    # Backend: model downloads and their progress
     ├── ollama-client.ts  # Backend: Ollama client
     ├── providers         # Backend: Ollama text generation & analysis
     ├── schema.ts         # Zod data structures & type inferences

@@ -59,3 +59,8 @@ export function getModelsInfo(): Promise<ModelsInfo> {
   }
   return cached.info;
 }
+
+// Forget the cached details, e.g. after a model was downloaded, so the next request sees it
+export function invalidateModelsInfo() {
+  cached = null;
+}

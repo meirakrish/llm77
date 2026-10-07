@@ -5,6 +5,7 @@
   import ModelInfo from './lib/ModelInfo.svelte';
   import ModelChecklist from './lib/ModelChecklist.svelte';
   import ModelPicker from './lib/ModelPicker.svelte';
+  import Models from './lib/Models.svelte';
   import Stats from './lib/Stats.svelte';
   import { history } from './lib/history.svelte';
   import { MODES, type Entry, type JobEntry, type RunMode } from './lib/types';
@@ -19,10 +20,17 @@
   let knowledgeDraft = $state('');
 
   // The open tab lives in the URL hash so reloads and links keep it
-  const VIEWS = ['workbench', 'history', 'knowledge', 'stats'] as const;
+  const VIEWS = ['workbench', 'history', 'knowledge', 'models', 'stats'] as const;
   type View = (typeof VIEWS)[number];
   const viewFromHash = (): View => VIEWS.find((v) => location.hash === `#${v}`) ?? 'workbench';
   let view = $state<View>(viewFromHash());
+  let tabs = $state<HTMLElement>();
+
+  // On narrow screens the tab strip scrolls; keep the open tab visible
+  $effect(() => {
+    view;
+    tabs?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
 
   function showView(next: View) {
     view = next;
@@ -74,6 +82,15 @@
     textarea?.focus();
   }
 
+  // Pick a model from the Models tab and get ready to ask it something
+  async function useModel(id: string) {
+    model = id;
+    if (mode === 'compare') mode = 'ask';
+    showView('workbench');
+    await tick();
+    textarea?.focus();
+  }
+
   function clearAll() {
     if (confirm('Delete all saved queries and results?')) history.clear();
   }
@@ -84,7 +101,7 @@
   <p class="sub">Queries run through the local queue and worker. History is saved in this browser.</p>
   <ModelInfo />
 
-  <nav class="tabs" aria-label="Sections">
+  <nav class="tabs" aria-label="Sections" bind:this={tabs}>
     <button type="button" aria-current={view === 'workbench' ? 'page' : undefined} onclick={() => showView('workbench')}>
       Workbench
     </button>
@@ -94,6 +111,9 @@
     <button type="button" aria-current={view === 'knowledge' ? 'page' : undefined} onclick={() => showView('knowledge')}>
       Knowledge base
     </button>
+    <button type="button" aria-current={view === 'models' ? 'page' : undefined} onclick={() => showView('models')}>
+      Models
+    </button>
     <button type="button" aria-current={view === 'stats' ? 'page' : undefined} onclick={() => showView('stats')}>
       Stats
     </button>
@@ -101,6 +121,8 @@
 
   {#if view === 'knowledge'}
     <Knowledge bind:draft={knowledgeDraft} />
+  {:else if view === 'models'}
+    <Models onuse={useModel} />
   {:else if view === 'stats'}
     <Stats />
   {:else if view === 'history'}
@@ -137,6 +159,7 @@
       {:else}
         <ModelPicker bind:value={model} />
       {/if}
+      <button class="link inline get-models" type="button" onclick={() => showView('models')}>Download another model</button>
       <textarea
         id="input"
         required
@@ -171,10 +194,11 @@
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
 
-  .tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--border); margin: 0 0 20px; }
+  /* Scrolls sideways on narrow screens rather than widening the page */
+  .tabs { display: flex; gap: 20px; box-shadow: inset 0 -1px var(--border); margin: 0 0 20px; overflow-x: auto; scrollbar-width: none; }
   .tabs button {
     border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; font-weight: 600;
-    padding: 8px 0; margin-bottom: -1px; border-bottom: 2px solid transparent; cursor: pointer;
+    padding: 8px 0; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; flex-shrink: 0;
   }
   .tabs button:hover { color: var(--text); }
   .tabs button[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
@@ -201,6 +225,7 @@
   .hint { color: var(--muted); font-size: 13px; flex: 1 1 280px; }
   .link.inline { color: var(--accent); padding: 0; }
   .link.inline:hover { text-decoration: underline; color: var(--accent); }
+  .get-models { display: block; margin: 4px 0 0 auto; font-size: 12px; }
   .primary:disabled { opacity: .5; cursor: default; }
   .primary {
     border: 0; background: var(--accent); color: var(--accent-text);

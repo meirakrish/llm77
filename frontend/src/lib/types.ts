@@ -123,6 +123,21 @@ export interface ModelOption {
   name: string;
 }
 
+// A model download running on the backend (see GET /api/models/pulls)
+export interface ModelPull {
+  model: string;
+  status: 'pulling' | 'done' | 'error' | 'cancelled';
+  // Ollama's latest progress message
+  detail: string;
+  completedBytes: number;
+  totalBytes: number;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+  // Once done: false for embedding-only models, which can't answer prompts
+  canGenerate?: boolean;
+}
+
 export interface ModelsResponse {
   workerOnline: boolean;
   defaultModel: string | null;
