@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { MAX_COMPARE, models, priceLabel } from './models.svelte';
+  import { MAX_COMPARE, models } from './models.svelte';
 
   // Model IDs to compare, in the order they were ticked
   let { value = $bindable([]) }: { value?: string[] } = $props();
@@ -29,8 +29,6 @@
   function toggle(id: string) {
     value = value.includes(id) ? value.filter((v) => v !== id) : [...value, id];
   }
-
-  const hasClaude = $derived(value.some((id) => models.list.find((m) => m.id === id)?.provider === 'claude'));
 </script>
 
 <fieldset class="checklist">
@@ -46,7 +44,6 @@
           onchange={() => toggle(m.id)}
         />
         <span class="name">{m.name}</span>
-        <span class="meta">{m.provider === 'claude' ? `Claude · ${priceLabel(m)}` : 'local'}</span>
       </label>
     {:else}
       <p class="note">No models available.</p>
@@ -58,9 +55,6 @@
     <p class="note">{models.status === 'loading' ? 'Loading models…' : 'Backend unreachable'}</p>
   {/if}
 </fieldset>
-{#if hasClaude}
-  <p class="cloud-note">Claude models are sent to Anthropic's API, along with any matching knowledge-base context. Billed per token.</p>
-{/if}
 
 <style>
   .checklist {
@@ -76,7 +70,5 @@
   label:has(input:disabled) { opacity: .5; cursor: default; }
   input { margin: 0; accent-color: var(--accent); }
   .name { overflow-wrap: anywhere; }
-  .meta { color: var(--muted); font-size: 12px; }
   .note { margin: 0; color: var(--muted); font-size: 13px; width: 100%; }
-  .cloud-note { margin: 6px 0 0; color: var(--warn); font-size: 12px; }
 </style>
