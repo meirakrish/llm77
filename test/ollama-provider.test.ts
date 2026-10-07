@@ -21,6 +21,16 @@ function chatStream(tokens: string[]) {
   return Object.assign((async function* () { yield* parts; })(), { abort: vi.fn() });
 }
 
+// A streamed generate response: the output in two parts, the last carrying the statistics
+function generateStream(output: string, doneReason = 'stop') {
+  const half = Math.floor(output.length / 2);
+  const parts = [
+    { response: output.slice(0, half), done: false },
+    { response: output.slice(half), done: true, done_reason: doneReason, ...stats }
+  ];
+  return Object.assign((async function* () { yield* parts; })(), { abort: vi.fn() });
+}
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('ollamaProvider.streamText', () => {
@@ -47,12 +57,12 @@ describe('ollamaProvider.analyze', () => {
   const valid = { summary: 'Late order', category: 'Support', urgency: 'High', actionItems: ['Check shipping'] };
 
   it('returns output that matches the schema', async () => {
-    generate.mockResolvedValue({ response: JSON.stringify(valid), ...stats });
+    generate.mockResolvedValue(generateStream(JSON.stringify(valid)));
     const result = await ollamaProvider.analyze('qwen', 'Where is my order?');
     expect(result).toEqual({ data: valid, model: 'qwen', usage: { promptTokens: 12, completionTokens: 50, tokensPerSecond: 25 } });
 
     const request = generate.mock.calls[0][0];
-    expect(request).toMatchObject({ model: 'qwen', stream: false, options: { temperature: 0 } });
+    expect(request).toMatchObject({ model: 'qwen', stream: true, options: { temperature: 0, num_predict: 1024 } });
     expect(request.format).toMatchObject({ type: 'object', required: expect.arrayContaining(['summary', 'category']) });
     expect(request.prompt).toContain('Where is my order?');
   });
@@ -60,11 +70,37 @@ describe('ollamaProvider.analyze', () => {
   it.each([
     ['invalid JSON', 'not json'],
     ['a value outside the schema', JSON.stringify({ ...valid, category: 'Other' })],
-    ['a missing field', JSON.stringify({ summary: 'x', category: 'Spam', urgency: 'Low' })]
+    ['a missing field', JSON.stringify({ summary: 'x', category: 'Spam', urgency: 'Low' })],
+    ['too many action items', JSON.stringify({ ...valid, actionItems: ['a', 'b', 'c', 'd', 'e', 'f'] })]
   ])('treats %s as a permanent failure', async (_name, response) => {
-    generate.mockResolvedValue({ response, ...stats });
+    generate.mockResolvedValue(generateStream(response));
     const error = await ollamaProvider.analyze('qwen', 'x').catch((e) => e);
     expect(error).toBeInstanceOf(UnrecoverableError);
     expect(error.message).toMatch(/^Data extraction layout violation/);
+  });
+
+  it('bounds the output in the schema handed to Ollama', async () => {
+    generate.mockResolvedValue(generateStream(JSON.stringify(valid)));
+    await ollamaProvider.analyze('qwen', 'x');
+    const { properties } = generate.mock.calls[0][0].format;
+    expect(properties.summary.maxLength).toBe(300);
+    expect(properties.actionItems).toMatchObject({ maxItems: 5, items: { maxLength: 200 } });
+  });
+
+  it('fails permanently when the model hits the token limit', async () => {
+    generate.mockResolvedValue(generateStream('{"summary": "check the air filter, check the air filter, ', 'length'));
+    const error = await ollamaProvider.analyze('qwen', 'x').catch((e) => e);
+    expect(error).toBeInstanceOf(UnrecoverableError);
+    expect(error.message).toBe('Data extraction layout violation: the model produced 1024 tokens without finishing.');
+  });
+
+  it('stops generating when aborted', async () => {
+    const stream = generateStream(JSON.stringify(valid));
+    generate.mockResolvedValue(stream);
+    const controller = new AbortController();
+    const pending = ollamaProvider.analyze('qwen', 'x', controller.signal);
+    controller.abort();
+    await pending.catch(() => {});
+    expect(stream.abort).toHaveBeenCalled();
   });
 });
