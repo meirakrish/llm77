@@ -12,8 +12,6 @@ export interface Metrics {
   completionTokens: number;
   totalTokens: number;
   tokensPerSecond: number;
-  // Only for Claude models, priced from the token counts
-  costUsd?: number;
 }
 
 // A knowledge base chunk an answer was grounded in; distance is cosine distance (0 = identical)
@@ -124,9 +122,6 @@ export interface ModelOption {
   id: string;
   name: string;
   provider: 'ollama' | 'claude';
-  // USD per million tokens (Claude only)
-  inputPrice?: number;
-  outputPrice?: number;
 }
 
 export interface ModelsResponse {
@@ -139,7 +134,6 @@ export interface ApiInfo {
   workerOnline: boolean;
   llmModel?: ModelInfo;
   embedModel?: ModelInfo;
-  claude?: { available: boolean; models: ModelOption[]; error?: string };
   ollamaVersion?: string | null;
   error?: string;
 }
@@ -177,7 +171,6 @@ interface OutcomeCounts {
 interface Performance {
   promptTokens: number;
   completionTokens: number;
-  costUsd: number;
   medianTokensPerSecond: number | null;
   p50ExecutionMs: number | null;
   p95ExecutionMs: number | null;

@@ -44,17 +44,6 @@
         <span class="dot" class:ok={!info.error} class:off={!!info.error}></span>
         {info.error ? `Problem: ${info.error}` : (info.ollamaVersion ?? 'unknown')}
       </dd>
-      {#if info.claude}
-        <dt>Claude</dt>
-        <dd>
-          <span class="dot" class:ok={info.claude.available} class:off={!info.claude.available}></span>
-          {#if info.claude.available}
-            {info.claude.models.map((m) => m.name).join(', ')}{info.claude.error ? ` (some unavailable: ${info.claude.error})` : ''}
-          {:else}
-            Unavailable: {info.claude.error ?? 'no models accessible'}
-          {/if}
-        </dd>
-      {/if}
       <dt>Worker</dt>
       <dd>
         <span class="dot" class:ok={info.workerOnline} class:off={!info.workerOnline}></span>

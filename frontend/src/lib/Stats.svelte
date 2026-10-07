@@ -1,6 +1,6 @@
 <script lang="ts">
   import * as api from './api';
-  import { formatCompact, formatCost, formatDuration } from './format';
+  import { formatCompact, formatDuration } from './format';
   import JobsChart from './JobsChart.svelte';
   import SpeedChart from './SpeedChart.svelte';
   import type { Stats, StatsRange } from './types';
@@ -51,7 +51,6 @@
   const t = $derived(stats?.totals);
   const finished = $derived(t ? t.completed + t.failed : 0);
   const successRate = $derived(t && finished ? Math.round((t.completed / finished) * 1000) / 10 : null);
-  const hasCost = $derived(!!t && t.costUsd > 0);
   const rangeLabel = $derived(RANGES.find((r) => r.value === range)!.label.toLowerCase());
 </script>
 
@@ -94,13 +93,6 @@
           <div class="value">{formatDuration(t.p50ExecutionMs)}</div>
           <div class="sub">p95 {formatDuration(t.p95ExecutionMs)} · queue p95 {formatDuration(t.p95QueueWaitMs)}</div>
         </div>
-        {#if hasCost}
-          <div class="tile">
-            <div class="label">Claude cost</div>
-            <div class="value">{formatCost(t.costUsd)}</div>
-            <div class="sub">billed per token</div>
-          </div>
-        {/if}
       </div>
 
       <section class="card">
@@ -110,7 +102,7 @@
 
       <section class="card">
         <h3>Generation speed by model</h3>
-        <p class="note">Median tokens per second of completed jobs. Claude's includes network time.</p>
+        <p class="note">Median tokens per second of completed jobs.</p>
         <SpeedChart models={stats.models} />
       </section>
 
@@ -127,7 +119,6 @@
                 <th title="Median and 95th percentile run time">Run p50 / p95</th>
                 <th title="95th percentile time waiting in the queue">Queue p95</th>
                 <th>Tokens out</th>
-                {#if hasCost}<th>Cost</th>{/if}
               </tr>
             </thead>
             <tbody>
@@ -140,7 +131,6 @@
                   <td>{formatDuration(m.p50ExecutionMs)} / {formatDuration(m.p95ExecutionMs)}</td>
                   <td>{formatDuration(m.p95QueueWaitMs)}</td>
                   <td>{formatCompact(m.completionTokens)}</td>
-                  {#if hasCost}<td>{m.costUsd ? formatCost(m.costUsd) : '–'}</td>{/if}
                 </tr>
               {/each}
             </tbody>

@@ -122,7 +122,7 @@ The system operates as two decoupled processes. Open two separate terminal insta
 For a compiled build, run `npm run build`, then `npm start` and `npm run start:worker`.
 
 ### 3. Frontend (optional)
-A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four models side by side on the same question (speed, tokens and cost per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) and Claude cost for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage.
+A small [Svelte 5](https://svelte.dev) + TypeScript web UI in `frontend/` for asking questions as conversations with follow-ups (streamed, with the knowledge base sources each answer used), comparing up to four local models side by side on the same question (speed and tokens per model), analyzing messages, and managing the knowledge base (add text, upload files, browse chunks, delete documents, test retrieval). Queued work shows its place in the queue, any run can be stopped, and answers keep streaming after a dropped connection or a page reload. A Stats tab charts jobs over time by outcome and generation speed per model, with success rate, tokens, run and queue times (median and p95) for the last 24 hours, 7 days or 30 days. Your queries and results are saved in the browser's local storage. The frontend only offers local Ollama models.
 
 **Development (same machine):** the Vite dev server forwards `/api` requests to the backend (`API_URL`, default `http://localhost:3000`), so no CORS setup is needed.
 ```bash
@@ -167,10 +167,10 @@ The API and worker read their settings from environment variables; the defaults 
 | `CLOUD_CONCURRENCY` | `4` | How many Claude jobs the worker runs at once |
 
 ### 5. Claude Models (optional)
-Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **backend's** environment (e.g. in `.env`) and restart it. The model picker in the frontend then offers the Claude models from `CLAUDE_MODELS` that the key can access; the info panel shows why if none are available.
+Prompts can run on Claude instead of a local model: set `ANTHROPIC_API_KEY` in the **backend's** environment (e.g. in `.env`) and restart it. `GET /api/models` then lists the Claude models from `CLAUDE_MODELS` that the key can access, and API clients can request them by name. The frontend doesn't offer them: it sticks to free local models.
 
 * **Data leaves your machine:** a Claude prompt, including any matching knowledge-base context, is sent to Anthropic's API. Local models keep everything local.
-* **Billed per token:** prices per million input / output tokens are shown in the picker (Claude Opus 5.5 $4 / $20, Claude Haiku 4.5 $1 / $5), and each Claude result shows its cost.
+* **Billed per token:** Claude Opus 5.5 costs $4 / $20 and Claude Haiku 4.5 $1 / $5 per million input / output tokens; each job's metrics include its cost.
 * **Ollama is still required:** Claude has no embeddings API, so knowledge-base search keeps using `EMBED_MODEL`.
 * Claude jobs use their own queue (`<QUEUE_NAME>-cloud`) and run in parallel, so they never wait behind local GPU jobs. Claude Opus 5.5 runs at low effort and with server-side refusal fallbacks; a request Claude declines fails with a clear message.
 
