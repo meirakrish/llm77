@@ -2,13 +2,13 @@
   import * as api from './api';
   import { formatBytes } from './format';
   import { models } from './models.svelte';
-  import type { ModelPull } from './types';
+  import type { CatalogModel, ModelPull } from './types';
 
   // Called with a model's ID to pick it in the Workbench
   let { onuse }: { onuse: (model: string) => void } = $props();
 
-  // Small models that run on most machines, offered as one-click suggestions
-  const SUGGESTED = ['llama3.2:1b', 'llama3.2:3b', 'qwen2.5:1.5b', 'gemma3:1b', 'phi4-mini'];
+  const FILTERS = { all: 'All', text: 'Text', vision: 'Vision', reasoning: 'Reasoning' } as const;
+  type Filter = keyof typeof FILTERS;
 
   let name = $state('');
   let starting = $state(false);
@@ -17,6 +17,24 @@
   let loadError = $state('');
 
   const active = $derived(pulls.some((p) => p.status === 'pulling'));
+
+  // null while loading
+  let catalog = $state<CatalogModel[] | null>(null);
+  let catalogError = $state('');
+  let filter = $state<Filter>('all');
+  // Smallest first; models whose size couldn't be looked up keep their order at the end
+  const shown = $derived(
+    (catalog ?? [])
+      .filter((m) => filter === 'all' || (filter === 'text' ? !m.tags.length : m.tags.includes(filter)))
+      .sort((a, b) => (a.sizeBytes ?? Infinity) - (b.sizeBytes ?? Infinity))
+  );
+
+  $effect(() => {
+    api.getCatalog().then(
+      (list) => (catalog = list),
+      (error) => (catalogError = (error as Error).message)
+    );
+  });
 
   $effect(() => models.subscribe());
 
@@ -76,21 +94,54 @@
 
 <section class="panel">
   <h2>Download a model</h2>
+  <div class="filters" role="group" aria-label="Filter models">
+    {#each Object.entries(FILTERS) as [key, label] (key)}
+      <button type="button" aria-pressed={filter === key} onclick={() => (filter = key as Filter)}>{label}</button>
+    {/each}
+  </div>
+  {#if catalog === null && !catalogError}
+    <p class="empty">Loading available models…</p>
+  {:else if catalogError}
+    <div class="error">Could not load available models: {catalogError}</div>
+  {:else}
+    <ul class="catalog" aria-label="Available models">
+      {#each shown as m (m.model)}
+        {@const pulling = pulls.some((p) => p.model === m.model && p.status === 'pulling')}
+        <li>
+          <div class="about">
+            <div>
+              <span class="name">{m.model}</span>
+              {#each m.tags as tag (tag)}<span class="tag">{tag}</span>{/each}
+            </div>
+            <div class="hint">{m.description}</div>
+          </div>
+          <div class="figures">
+            <span title={m.quantization ? `Quantization: ${m.quantization}` : undefined}>{m.parameterSize ? `${m.parameterSize} params` : '–'}</span>
+            <span>{m.sizeBytes === null ? 'size unknown' : formatBytes(m.sizeBytes)}</span>
+          </div>
+          {#if installed(m.model)}
+            <button class="link use" type="button" onclick={() => onuse(offeredId(m.model))}>Use ✓</button>
+          {:else}
+            <button class="get" type="button" disabled={pulling || starting} onclick={() => start(m.model)}>
+              {pulling ? 'Downloading…' : 'Download'}
+            </button>
+          {/if}
+        </li>
+      {:else}
+        <li class="empty">No models in this category.</li>
+      {/each}
+    </ul>
+  {/if}
+
+  <h3>Another model</h3>
   <form class="pull" onsubmit={submit}>
     <input type="text" bind:value={name} placeholder="Model name, e.g. llama3.2:1b" aria-label="Model name" spellcheck="false" autocomplete="off" />
     <button class="primary" type="submit" disabled={starting || !name.trim()}>{starting ? 'Starting…' : 'Download'}</button>
   </form>
   <p class="hint">
     Any model from the <a href="https://ollama.com/library" target="_blank" rel="noreferrer">Ollama library</a>, or a GGUF
-    repository as <code>hf.co/user/repo</code>. It is stored by the backend's Ollama and stays available after restarts.
+    repository as <code>hf.co/user/repo</code>. Models are stored by the backend's Ollama and stay available after restarts.
   </p>
-  <div class="suggestions" role="group" aria-label="Suggested models">
-    {#each SUGGESTED as model (model)}
-      <button class="chip" type="button" disabled={installed(model) || pulls.some((p) => p.model === model && p.status === 'pulling')} onclick={() => start(model)}>
-        {model}{installed(model) ? ' ✓' : ''}
-      </button>
-    {/each}
-  </div>
   {#if startError}<div class="error">{startError}</div>{/if}
 
   {#if pulls.length}
@@ -179,13 +230,34 @@
   .error { color: var(--danger); font-size: 14px; margin-top: 8px; overflow-wrap: anywhere; }
   .empty { color: var(--muted); text-align: center; padding: 24px 0; font-size: 14px; }
 
-  .suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chip {
-    border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
-    border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer;
+  h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); }
+  .filters { display: flex; gap: 4px; background: var(--surface-2); padding: 3px; border-radius: 8px; width: fit-content; max-width: 100%; }
+  .filters button {
+    border: 0; background: transparent; color: var(--muted);
+    padding: 4px 10px; border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer;
   }
-  .chip:hover:not(:disabled) { border-color: var(--accent); }
-  .chip:disabled { color: var(--muted); cursor: default; }
+  .filters button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+
+  .catalog { list-style: none; margin: 8px 0 0; padding: 0; max-height: 420px; overflow-y: auto; font-size: 14px; }
+  .catalog li { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
+  .catalog li + li { border-top: 1px solid var(--border); }
+  .catalog .about { flex: 1; min-width: 0; }
+  .catalog .hint { font-size: 12px; }
+  .tag {
+    margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--surface-2);
+    font-size: 11px; color: var(--muted); vertical-align: 1px;
+  }
+  .figures {
+    display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0;
+    font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .get {
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--text); flex-shrink: 0;
+    border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; min-width: 92px;
+  }
+  .get:hover:not(:disabled) { border-color: var(--accent); }
+  .get:disabled { color: var(--muted); cursor: default; }
+  .catalog .link.use { min-width: 92px; text-align: center; }
 
   .pulls { list-style: none; margin: 12px 0 0; padding: 0; font-size: 13px; }
   .pulls li { padding: 8px 0; border-top: 1px solid var(--border); }

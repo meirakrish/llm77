@@ -1,4 +1,4 @@
-import type { Analysis, ApiInfo, ChatMessage, DocumentDetail, Stats, StatsRange, DocumentSummary, Metrics, ModelPull, ModelsResponse, SearchResult, Source } from './types';
+import type { Analysis, ApiInfo, CatalogModel, ChatMessage, DocumentDetail, Stats, StatsRange, DocumentSummary, Metrics, ModelPull, ModelsResponse, SearchResult, Source } from './types';
 
 // Backend base URL, baked in at build time; empty means same origin (the dev server proxies /api)
 const API_URL = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -143,6 +143,10 @@ export async function getModels(): Promise<ModelsResponse> {
   const res = await fetch(`${API_URL}/api/models`);
   if (!res.ok) throw new Error(`Request failed (${res.status})`);
   return res.json();
+}
+
+export async function getCatalog(): Promise<CatalogModel[]> {
+  return (await (await request('/api/models/catalog')).json()).models;
 }
 
 export async function listPulls(): Promise<ModelPull[]> {
