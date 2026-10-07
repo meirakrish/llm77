@@ -13,7 +13,6 @@ export const modelsInfo: ModelsInfo = {
   llmModel: { name: 'test-llm' },
   embedModel: { name: 'test-embed' },
   localModels: ['test-llm', 'qwen'],
-  claude: { available: true, models: [{ id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', inputPrice: 1, outputPrice: 5 }] },
   ollamaVersion: '0.0.0-test',
   updatedAt: new Date(0).toISOString()
 };

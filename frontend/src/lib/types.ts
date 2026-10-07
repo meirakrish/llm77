@@ -121,7 +121,6 @@ export interface ModelInfo {
 export interface ModelOption {
   id: string;
   name: string;
-  provider: 'ollama' | 'claude';
 }
 
 export interface ModelsResponse {
@@ -180,7 +179,6 @@ interface Performance {
 
 export interface ModelStats extends OutcomeCounts, Performance {
   model: string;
-  provider: 'ollama' | 'claude';
 }
 
 export interface StatsBucket extends OutcomeCounts {

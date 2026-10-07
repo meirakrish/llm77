@@ -15,7 +15,6 @@
     "build:worker": "esbuild src/worker.ts --bundle --platform=node --target=node22 --outfile=dist/worker.bundle.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "@lancedb/lancedb": "^0.39.0",
     "apache-arrow": "18.1.0",
     "bullmq": "^6.3.11",

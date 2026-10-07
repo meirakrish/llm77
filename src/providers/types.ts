@@ -10,12 +10,11 @@ export interface Usage {
   promptTokens: number;
   completionTokens: number;
   tokensPerSecond: number;
-  costUsd?: number;
 }
 
 export interface TextResult {
   text: string;
-  // The model that actually produced the output (a Claude fallback can differ from the one requested)
+  // The model that produced the output
   model: string;
   usage: Usage;
 }

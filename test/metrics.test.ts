@@ -73,7 +73,7 @@ describe('metrics', () => {
   it('reports empty stats with no records', async () => {
     const { redis } = fakeRedis();
     const stats = await getStats(redis, '24h');
-    expect(stats.totals).toMatchObject({ jobs: 0, completed: 0, p50ExecutionMs: null, medianTokensPerSecond: null, costUsd: 0 });
+    expect(stats.totals).toMatchObject({ jobs: 0, completed: 0, p50ExecutionMs: null, medianTokensPerSecond: null });
     expect(stats.models).toEqual([]);
     expect(stats.timeline).toHaveLength(24);
     expect(stats.to).toBe(new Date(Date.UTC(2026, 9, 7, 13)).toISOString());
@@ -84,18 +84,18 @@ describe('metrics', () => {
     for (let i = 1; i <= 10; i++) {
       await recordAt(redis, NOW - i * 60_000, completed('qwen', { executionMs: i * 100, tokensPerSecond: i, queueWaitMs: i }));
     }
-    await recordAt(redis, NOW - HOUR, completed('claude-haiku-4-5', { costUsd: 0.0015 }));
-    await recordAt(redis, NOW - HOUR, completed('claude-haiku-4-5', { costUsd: 0.0025 }));
+    await recordAt(redis, NOW - HOUR, completed('llama3'));
+    await recordAt(redis, NOW - HOUR, completed('llama3'));
     await recordAt(redis, NOW - 2 * HOUR, { kind: 'analyze', model: 'qwen', outcome: 'failed', executionMs: 99_999 });
     await recordAt(redis, NOW - 2 * HOUR, { kind: 'generate', model: 'qwen', outcome: 'cancelled' });
 
     const stats = await getStats(redis, '24h');
-    expect(stats.totals).toMatchObject({ jobs: 14, completed: 12, failed: 1, cancelled: 1, promptTokens: 120, completionTokens: 240, costUsd: 0.004 });
+    expect(stats.totals).toMatchObject({ jobs: 14, completed: 12, failed: 1, cancelled: 1, promptTokens: 120, completionTokens: 240 });
 
-    const [qwen, claude] = stats.models;
+    const [qwen, llama] = stats.models;
     // Failed and cancelled jobs count as jobs but not in the timing figures
-    expect(qwen).toMatchObject({ model: 'qwen', provider: 'ollama', jobs: 12, completed: 10, p50ExecutionMs: 500, p95ExecutionMs: 1000, medianTokensPerSecond: 5, p50QueueWaitMs: 5 });
-    expect(claude).toMatchObject({ model: 'claude-haiku-4-5', provider: 'claude', jobs: 2, costUsd: 0.004 });
+    expect(qwen).toMatchObject({ model: 'qwen', jobs: 12, completed: 10, p50ExecutionMs: 500, p95ExecutionMs: 1000, medianTokensPerSecond: 5, p50QueueWaitMs: 5 });
+    expect(llama).toMatchObject({ model: 'llama3', jobs: 2, completed: 2 });
   });
 
   it('places records in hourly buckets and ignores older ones', async () => {
