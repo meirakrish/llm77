@@ -1,5 +1,6 @@
 import { UnrecoverableError } from 'bullmq';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { config } from '../../src/config';
 import { searchRelevant } from '../../src/db';
 import { jobEventsKey } from '../../src/events';
 import { ollamaProvider } from '../../src/providers/ollama';
@@ -32,8 +33,9 @@ describe('service status', () => {
     const { body } = await api.get('/api/models');
     expect(body.defaultModel).toBe('test-llm');
     expect(body.models).toEqual([
-      { id: 'test-llm', name: 'test-llm' },
-      { id: 'qwen', name: 'qwen' }
+      { id: 'test-llm', name: 'test-llm', vision: false },
+      { id: 'qwen', name: 'qwen', vision: false },
+      { id: 'seer', name: 'seer', vision: true }
     ]);
   });
 });
@@ -185,10 +187,26 @@ describe('queued jobs', () => {
     [{ messages: [{ role: 'assistant', content: 'hi' }] }, 'Message 1 must have role "user": turns alternate, starting with the user.'],
     [{ prompt: 'hi', model: 42 }, 'model must be a string.'],
     [{ prompt: 'hi', model: 'llama9' }, 'Model llama9 is not installed in Ollama.'],
-    [{ prompt: 'hi', model: 'claude-opus-5-5' }, 'Model claude-opus-5-5 is not installed in Ollama.']
+    [{ prompt: 'hi', model: 'claude-opus-5-5' }, 'Model claude-opus-5-5 is not installed in Ollama.'],
+    [{ messages: [{ role: 'user', content: 'What is this?', images: ['aGVsbG8='] }], model: 'qwen' }, "Model qwen can't read images. Pick a vision model, or download one in the Models tab."],
+    [{ messages: [{ role: 'user', content: 'What is this?', images: ['aGVsbG8='] }] }, "Model test-llm can't read images. Pick a vision model, or download one in the Models tab."]
   ])('rejects %j', async (request, error) => {
     expect(await api.post('/api/jobs', request)).toEqual({ status: 400, body: { error } });
     expect((await api.stream(request)).body).toEqual({ error });
+  });
+
+  it('passes attachments to the model, then drops the images from the stored job', async () => {
+    ollama.streamText.mockImplementation(streamsTokens('A cat.'));
+    const question = { role: 'user', content: 'What is this?', images: ['aGVsbG8='], documents: [{ name: 'notes.md', text: 'Cats' }] };
+    const { events } = await api.stream({ messages: [question], model: 'seer' });
+
+    expect(events.at(-1)).toMatchObject({ event: 'done', data: { text: 'A cat.' } });
+    expect(ollama.streamText.mock.calls[0][1]).toEqual([expect.objectContaining({ images: ['aGVsbG8='], documents: question.documents })]);
+    // The worker drops them right after sending the done event
+    await vi.waitFor(async () => {
+      const data = JSON.parse((await stack.redis.hget(`bull:${config.queueName}:${events[0].data.jobId}`, 'data'))!);
+      expect(data.messages).toEqual([{ role: 'user', content: 'What is this?', documents: question.documents }]);
+    });
   });
 
   it('returns 404 for an unknown job', async () => {

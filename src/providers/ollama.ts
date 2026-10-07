@@ -1,14 +1,29 @@
 import { UnrecoverableError } from 'bullmq';
 import { ChatResponse, GenerateResponse } from 'ollama';
 import { z } from 'zod';
+import { config } from '../config';
+import { inlineDocuments } from '../chat';
 import { ollama } from '../ollama-client';
 import { AnalysisResponseSchema } from '../schema';
-import { Provider, Usage } from './types';
+import { ChatMessage, Provider, Usage } from './types';
 
 // JSON Schema handed to Ollama so the grammar layer enforces the exact response structure
 const ANALYSIS_JSON_SCHEMA = z.toJSONSchema(AnalysisResponseSchema);
 // Far more than the schema's limits allow; a backstop so a runaway generation can't occupy the GPU indefinitely
 const ANALYSIS_MAX_TOKENS = 1024;
+
+// Ollama's usual context window. Prompts that don't fit are cut, so a long attached document would lose its start.
+const DEFAULT_CONTEXT_TOKENS = 4096;
+// Room left for the answer
+const ANSWER_TOKENS = 1024;
+
+// A context window big enough for the prompt (estimated at 3 characters per token), or undefined for Ollama's default
+export function contextFor(messages: ChatMessage[]): number | undefined {
+  const chars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const needed = Math.ceil(chars / 3) + ANSWER_TOKENS;
+  if (needed <= DEFAULT_CONTEXT_TOKENS) return undefined;
+  return Math.min(Math.ceil(needed / 1024) * 1024, Math.max(config.maxContextTokens, DEFAULT_CONTEXT_TOKENS));
+}
 
 // Extract token usage and throughput statistics from an Ollama response
 function usageOf(response: GenerateResponse | ChatResponse): Usage {
@@ -24,8 +39,15 @@ function usageOf(response: GenerateResponse | ChatResponse): Usage {
 
 export const ollamaProvider: Provider = {
   async streamText(model, messages, onToken, signal) {
+    const prompt = messages.map(inlineDocuments);
+    const numCtx = contextFor(prompt);
     // The chat endpoint applies the model's own conversation template to the turns
-    const parts = await ollama.chat({ model, messages, stream: true });
+    const parts = await ollama.chat({
+      model,
+      messages: prompt.map(({ role, content, images }) => ({ role, content, ...(images ? { images } : {}) })),
+      stream: true,
+      ...(numCtx ? { options: { num_ctx: numCtx } } : {})
+    });
     signal?.addEventListener('abort', () => parts.abort(), { once: true });
 
     let text = '';
@@ -42,10 +64,7 @@ export const ollamaProvider: Provider = {
   },
 
   async analyze(model, text, signal) {
-    // Streamed so the request can be aborted when the job is cancelled
-    const parts = await ollama.generate({
-      model,
-      prompt: `You are an AI data extraction engine. Analyze the log message below and return a JSON object that strictly adheres to this structure.
+    const prompt = `You are an AI data extraction engine. Analyze the log message below and return a JSON object that strictly adheres to this structure.
 CRITICAL: You must output ONLY valid JSON. Do not include markdown wraps like \`\`\`json. Do not alter the key names.
 
 Expected JSON Structure:
@@ -57,10 +76,15 @@ Expected JSON Structure:
 }
 
 Log Message:
-"${text}"`,
+"${text}"`;
+    const numCtx = contextFor([{ role: 'user', content: prompt }]);
+    // Streamed so the request can be aborted when the job is cancelled
+    const parts = await ollama.generate({
+      model,
+      prompt,
       format: ANALYSIS_JSON_SCHEMA,
       stream: true,
-      options: { temperature: 0.0, num_predict: ANALYSIS_MAX_TOKENS }
+      options: { temperature: 0.0, num_predict: ANALYSIS_MAX_TOKENS, ...(numCtx ? { num_ctx: numCtx } : {}) }
     });
     // Also covers a cancel that arrived while the request was starting
     if (signal?.aborted) parts.abort();

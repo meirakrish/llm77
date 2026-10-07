@@ -81,6 +81,17 @@ export function startWorkers() {
     return { structuredData: result.data, model: result.model, metrics };
   }
 
+  // Attached images can be megabytes; finished jobs stay in Redis for a day, so keep only the text of the conversation
+  async function dropImages(job: Job) {
+    const messages: ChatMessage[] | undefined = job.data.messages;
+    if (!messages?.some((m) => m.images)) return;
+    try {
+      await job.updateData({ ...job.data, messages: messages.map(({ images: _images, ...rest }) => rest) });
+    } catch (error: any) {
+      console.error(`[Job ${job.id}] Failed to drop attached images:`, error.message);
+    }
+  }
+
   // signal fires when the user cancels the job (see the cancel subscription below)
   async function processJob(job: Job, _token?: string, signal?: AbortSignal) {
     // Calculate Queue Latency (Time spent waiting in Redis)
@@ -116,6 +127,7 @@ export function startWorkers() {
         completionTokens: m.completionTokens,
         tokensPerSecond: m.tokensPerSecond
       });
+      await dropImages(job);
       return result;
     } catch (error: any) {
       // Aborting surfaces as whatever the interrupted request threw; report it as the cancellation it is, and don't retry
@@ -134,6 +146,7 @@ export function startWorkers() {
           queueWaitMs: queueWaitTimeMs,
           executionMs: Date.now() - startTime
         });
+        await dropImages(job);
       }
       throw cancelled ? new UnrecoverableError(CANCELLED_MESSAGE) : error;
     }

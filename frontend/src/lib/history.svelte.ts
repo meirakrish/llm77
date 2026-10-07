@@ -1,5 +1,6 @@
 import * as api from './api';
-import type { Analysis, AskEntry, ChatMessage, CompareEntry, Entry, JobEntry, Run } from './types';
+import { describe, userMessage, withDocuments } from './attachments';
+import type { Analysis, AskEntry, Attachment, ChatMessage, CompareEntry, Entry, JobEntry, Run } from './types';
 
 const STORE_KEY = 'llm77.history.v1';
 
@@ -22,26 +23,20 @@ function load(): Entry[] {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const settled = (status: string) => status === 'done' || status === 'error' || status === 'cancelled';
 
-const newRun = (input: string, requestedModel?: string): Run => ({
+const newRun = (input: string, requestedModel?: string, attachments: Attachment[] = []): Run => ({
   id: crypto.randomUUID(),
   input,
+  ...(attachments.length ? { attachments: describe(attachments) } : {}),
   ...(requestedModel ? { requestedModel } : {}),
   status: 'pending',
   text: ''
 });
 
-// The conversation so far as chat messages; turns that failed are left out so user and assistant still alternate
-function conversation(runs: Run[]): ChatMessage[] {
-  return runs
-    .filter((run) => run.status === 'done')
-    .flatMap((run): ChatMessage[] => [
-      { role: 'user', content: run.input },
-      { role: 'assistant', content: run.text }
-    ]);
-}
-
 class History {
   entries = $state<Entry[]>(load());
+  // Attachments' contents by run (or analysis entry) ID. Too big for localStorage, so they last until a reload;
+  // after that, follow-ups and Reuse go without them.
+  private attachments = new Map<string, Attachment[]>();
   // The last event received for each streaming run, so a dropped connection resumes right after it. Not saved:
   // after a reload the job's events are replayed from the start.
   private lastEventIds = new Map<string, string>();
@@ -56,48 +51,71 @@ class History {
     return this.entries.some((e) => e.id === entry.id);
   }
 
-  ask(input: string, requestedModel?: string) {
+  // The attachments of an entry's first question, while they are still in memory
+  attachmentsOf(entry: Entry): Attachment[] {
+    return this.attachments.get(entry.mode === 'ask' || entry.mode === 'compare' ? entry.runs[0].id : entry.id) ?? [];
+  }
+
+  // The conversation so far as chat messages; turns that failed are left out so user and assistant still alternate
+  private conversation(runs: Run[]): ChatMessage[] {
+    return runs
+      .filter((run) => run.status === 'done')
+      .flatMap((run): ChatMessage[] => [
+        userMessage(run.input, this.attachments.get(run.id)),
+        { role: 'assistant', content: run.text }
+      ]);
+  }
+
+  ask(input: string, requestedModel?: string, attachments: Attachment[] = []) {
+    const run = newRun(input, requestedModel, attachments);
+    if (attachments.length) this.attachments.set(run.id, attachments);
     this.entries.unshift({
       id: crypto.randomUUID(),
       mode: 'ask',
       input,
       createdAt: new Date().toISOString(),
       ...(requestedModel ? { requestedModel } : {}),
-      runs: [newRun(input, requestedModel)]
+      runs: [run]
     });
     this.save();
     // Run against the reactive proxies so updates re-render the entry
     const entry = this.entries[0] as AskEntry;
-    this.stream(entry, entry.runs[0], [{ role: 'user', content: input }]);
+    this.stream(entry, entry.runs[0], [userMessage(input, attachments)]);
   }
 
   // Continue a conversation with the same model; the whole conversation is sent so the model sees the context
   followUp(entry: AskEntry, input: string) {
-    const messages: ChatMessage[] = [...conversation(entry.runs), { role: 'user', content: input }];
+    const messages: ChatMessage[] = [...this.conversation(entry.runs), { role: 'user', content: input }];
     entry.runs.push(newRun(input, entry.requestedModel));
     this.save();
     this.stream(entry, entry.runs[entry.runs.length - 1], messages);
   }
 
-  compare(input: string, models: string[]) {
+  compare(input: string, models: string[], attachments: Attachment[] = []) {
+    const runs = models.map((model) => newRun(input, model, attachments));
+    if (attachments.length) for (const run of runs) this.attachments.set(run.id, attachments);
     this.entries.unshift({
       id: crypto.randomUUID(),
       mode: 'compare',
       input,
       createdAt: new Date().toISOString(),
-      runs: models.map((model) => newRun(input, model))
+      runs
     });
     this.save();
     const entry = this.entries[0] as CompareEntry;
     // Each model is its own job; local ones still queue behind each other on the GPU
-    for (const run of entry.runs) this.stream(entry, run, [{ role: 'user', content: input }]);
+    for (const run of entry.runs) this.stream(entry, run, [userMessage(input, attachments)]);
   }
 
-  analyze(input: string, requestedModel?: string) {
+  // Only documents can be analyzed; their text is appended to the input
+  analyze(input: string, requestedModel?: string, attachments: Attachment[] = []) {
+    const id = crypto.randomUUID();
+    if (attachments.length) this.attachments.set(id, attachments);
     this.entries.unshift({
-      id: crypto.randomUUID(),
+      id,
       mode: 'analyze',
       input,
+      ...(attachments.length ? { attachments: describe(attachments) } : {}),
       ...(requestedModel ? { requestedModel } : {}),
       createdAt: new Date().toISOString(),
       status: 'pending',
@@ -119,13 +137,21 @@ class History {
   }
 
   remove(id: string) {
+    const entry = this.entries.find((e) => e.id === id);
+    if (entry) this.forget(entry);
     this.entries = this.entries.filter((e) => e.id !== id);
     this.save();
   }
 
   clear() {
+    for (const entry of this.entries) this.forget(entry);
     this.entries = [];
     this.save();
+  }
+
+  private forget(entry: Entry) {
+    const ids = entry.mode === 'ask' || entry.mode === 'compare' ? entry.runs.map((run) => run.id) : [entry.id];
+    for (const id of ids) this.attachments.delete(id);
   }
 
   // Resume anything that was still running when the page was closed
@@ -217,7 +243,8 @@ class History {
 
   private async runAnalyze(entry: JobEntry) {
     try {
-      this.update(entry, { jobId: await api.queueAnalysis(entry.input, entry.requestedModel) });
+      const text = withDocuments(entry.input, this.attachments.get(entry.id));
+      this.update(entry, { jobId: await api.queueAnalysis(text, entry.requestedModel) });
       await this.pollAnalysis(entry);
     } catch (error) {
       this.update(entry, { status: 'error', error: (error as Error).message });

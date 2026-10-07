@@ -2,7 +2,7 @@
   import { formatMetrics } from './format';
   import RunResult from './RunResult.svelte';
   import Sources from './Sources.svelte';
-  import { BADGES, type Entry, type Run } from './types';
+  import { BADGES, type AttachmentInfo, type Entry, type Run } from './types';
 
   let {
     entry,
@@ -20,6 +20,9 @@
   } = $props();
 
   let followText = $state('');
+
+  // What was attached to the first question
+  const attachments = $derived(entry.mode === 'ask' || entry.mode === 'compare' ? entry.runs[0].attachments : entry.attachments);
 
   const settled = (run: Run) => run.status === 'done' || run.status === 'error' || run.status === 'cancelled';
   // The model shown in the header; a comparison names its models in each column instead
@@ -58,6 +61,23 @@
   }
 </script>
 
+{#snippet files(list: AttachmentInfo[])}
+  <ul class="files" aria-label="Attachments">
+    {#each list as file, i (i)}
+      <li title={file.kind === 'image' ? 'Image' : 'Document'}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          {#if file.kind === 'image'}
+            <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 9" />
+          {:else}
+            <path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8zM14 3v5h5" />
+          {/if}
+        </svg>
+        {file.name}
+      </li>
+    {/each}
+  </ul>
+{/snippet}
+
 <article class="entry" id="e-{entry.id}">
   <div class="entry-head">
     <span class="badge">{BADGES[entry.mode]}</span>
@@ -70,6 +90,7 @@
     <button class="link danger" type="button" onclick={ondelete}>Delete</button>
   </div>
   <div class="query">{entry.input}</div>
+  {#if attachments?.length}{@render files(attachments)}{/if}
 
   {#if entry.mode === 'ask'}
     {#each entry.runs as run, i (run.id)}
@@ -162,6 +183,12 @@
     padding: 2px 7px; border-radius: 999px; background: var(--surface-2); color: var(--muted);
   }
   .query { margin: 8px 0 10px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .files { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 10px; padding: 0; }
+  .files li {
+    display: inline-flex; align-items: center; gap: 4px; max-width: 100%; overflow-wrap: anywhere;
+    font-size: 12px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px;
+  }
+  .files svg { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
   .query.follow { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border); }
   .status { color: var(--muted); font-style: italic; }
   .stop { margin-top: 6px; padding: 0; color: var(--danger); }

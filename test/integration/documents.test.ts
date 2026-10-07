@@ -108,3 +108,25 @@ describe('knowledge base routes', () => {
     expect(deleteDocument).not.toHaveBeenCalled();
   });
 });
+
+describe('reading a file to attach', () => {
+  const extract = (filename: string | null, body: string) =>
+    fetch(`${stack.url}/api/extract${filename === null ? '' : `?filename=${encodeURIComponent(filename)}`}`, { method: 'POST', body });
+
+  it('returns the text without storing anything', async () => {
+    vi.mocked(addDocument).mockClear();
+    const res = await extract('notes.md', '  # Notes\nSome text\n');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ text: '# Notes\nSome text' });
+    expect(addDocument).not.toHaveBeenCalled();
+  });
+
+  it('rejects files it cannot read or that are too long to attach', async () => {
+    expect((await extract(null, 'x')).status).toBe(400);
+    expect((await extract('blank.txt', ' \n')).status).toBe(400);
+    expect((await extract('photo.png', 'x')).status).toBe(415);
+    const long = await extract('book.txt', 'x'.repeat(100_001));
+    expect(long.status).toBe(413);
+    expect((await long.json()).error).toContain('Add it to the knowledge base instead');
+  });
+});

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import Attachments from './lib/Attachments.svelte';
   import HistoryEntry from './lib/HistoryEntry.svelte';
   import Knowledge from './lib/Knowledge.svelte';
   import ModelInfo from './lib/ModelInfo.svelte';
@@ -8,7 +9,8 @@
   import Models from './lib/Models.svelte';
   import Stats from './lib/Stats.svelte';
   import { history } from './lib/history.svelte';
-  import { MODES, type Entry, type JobEntry, type RunMode } from './lib/types';
+  import { models } from './lib/models.svelte';
+  import { MODES, type Attachment, type Entry, type JobEntry, type RunMode } from './lib/types';
 
   let mode = $state<RunMode>('ask');
   let input = $state('');
@@ -16,6 +18,26 @@
   // Models ticked for Compare mode
   let compareModels = $state<string[]>([]);
   let textarea = $state<HTMLTextAreaElement>();
+  let attachments = $state<Attachment[]>([]);
+  // Files still being read
+  let reading = $state(0);
+  let attacher = $state<ReturnType<typeof Attachments>>();
+  let dragging = $state(false);
+
+  // Images need models that can see them
+  const imageProblem = $derived.by(() => {
+    if (!attachments.some((a) => a.kind === 'image')) return '';
+    if (mode === 'analyze') return 'Analyze reads text only. Remove the images, or use Ask.';
+    const chosen = mode === 'compare' ? compareModels : [model || models.defaultModel || ''];
+    // Models the list doesn't describe are left for the backend to check
+    const blind = chosen.filter((id) => models.list.find((m) => m.id === id)?.vision === false);
+    if (!blind.length) return '';
+    return `${blind.join(', ')} can't read images. Pick a vision model${models.list.some((m) => m.vision) ? '' : ' (download one in the Models tab)'}.`;
+  });
+  // Why the query can't run as it stands
+  const blocked = $derived(
+    reading ? 'Reading attachments…' : mode === 'compare' && compareModels.length < 2 ? 'Select at least two models' : imageProblem
+  );
   // Unsaved text in the Knowledge base tab's editor, kept across tab switches
   let knowledgeDraft = $state('');
 
@@ -43,11 +65,12 @@
   function submit(event: SubmitEvent) {
     event.preventDefault();
     const text = input.trim();
-    if (!text || (mode === 'compare' && compareModels.length < 2)) return;
-    if (mode === 'ask') history.ask(text, model || undefined);
-    else if (mode === 'compare') history.compare(text, compareModels);
-    else history.analyze(text, model || undefined);
+    if (!text || blocked) return;
+    if (mode === 'ask') history.ask(text, model || undefined, attachments);
+    else if (mode === 'compare') history.compare(text, compareModels, attachments);
+    else history.analyze(text, model || undefined, attachments);
     input = '';
+    attachments = [];
     // Results stream into the History tab
     showView('history');
   }
@@ -56,6 +79,27 @@
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
       (event.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
     }
+  }
+
+  // Images pasted into the question are attached; pasted text goes in as usual
+  function onPaste(event: ClipboardEvent) {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (!files.length) return;
+    event.preventDefault();
+    attacher?.add(files);
+  }
+
+  function onDrop(event: DragEvent) {
+    dragging = false;
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault();
+    attacher?.add([...event.dataTransfer.files]);
+  }
+
+  function onDragOver(event: DragEvent) {
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    event.preventDefault();
+    dragging = true;
   }
 
   async function selectMode(next: RunMode) {
@@ -75,6 +119,7 @@
     showView('workbench');
     mode = entry.mode;
     input = entry.input;
+    attachments = history.attachmentsOf(entry);
     // The pickers drop models that are no longer offered
     if (entry.mode === 'compare') compareModels = entry.runs.flatMap((run) => (run.requestedModel ? [run.requestedModel] : []));
     else model = entry.requestedModel ?? '';
@@ -146,7 +191,15 @@
       {/each}
     </div>
   {:else}
-    <form class="composer" id="composer" onsubmit={submit}>
+    <form
+      class="composer"
+      class:dragging
+      id="composer"
+      onsubmit={submit}
+      ondragover={onDragOver}
+      ondragleave={(e) => !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node) && (dragging = false)}
+      ondrop={onDrop}
+    >
       <div class="modes" role="group" aria-label="Mode">
         {#each Object.entries(MODES) as [key, m] (key)}
           <button type="button" data-mode={key} aria-pressed={mode === key} onclick={() => selectMode(key as RunMode)}>
@@ -167,7 +220,10 @@
         bind:value={input}
         placeholder={MODES[mode].placeholder}
         onkeydown={onKeydown}
+        onpaste={onPaste}
       ></textarea>
+      <Attachments bind:this={attacher} bind:items={attachments} bind:reading imagesAllowed={mode !== 'analyze'} />
+      {#if imageProblem}<div class="blocked">{imageProblem}</div>{/if}
       <div class="row">
         <span class="hint">
           {MODES[mode].hint}
@@ -176,12 +232,7 @@
           {/if}
           Ctrl+Enter to run.
         </span>
-        <button
-          class="primary"
-          type="submit"
-          disabled={mode === 'compare' && compareModels.length < 2}
-          title={mode === 'compare' && compareModels.length < 2 ? 'Select at least two models' : undefined}
-        >Run</button>
+        <button class="primary" type="submit" disabled={!!blocked} title={blocked || undefined}>Run</button>
       </div>
     </form>
   {/if}
@@ -220,8 +271,10 @@
     background: transparent; color: var(--text);
     border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: inherit;
   }
+  .composer.dragging { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .blocked { color: var(--warn); font-size: 13px; margin-top: 6px; }
   textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .row { margin-top: 8px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .hint { color: var(--muted); font-size: 13px; flex: 1 1 280px; }
   .link.inline { color: var(--accent); padding: 0; }
   .link.inline:hover { text-decoration: underline; color: var(--accent); }

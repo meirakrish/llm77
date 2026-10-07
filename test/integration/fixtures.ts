@@ -12,7 +12,8 @@ export const streamsTokens = (...tokens: string[]): Provider['streamText'] => as
 export const modelsInfo: ModelsInfo = {
   llmModel: { name: 'test-llm' },
   embedModel: { name: 'test-embed' },
-  localModels: ['test-llm', 'qwen'],
+  localModels: ['test-llm', 'qwen', 'seer'],
+  visionModels: ['seer'],
   ollamaVersion: '0.0.0-test',
   updatedAt: new Date(0).toISOString()
 };

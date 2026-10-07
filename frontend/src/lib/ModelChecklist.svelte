@@ -44,6 +44,7 @@
           onchange={() => toggle(m.id)}
         />
         <span class="name">{m.name}</span>
+        {#if m.vision}<span class="vision" title="Can read images">vision</span>{/if}
       </label>
     {:else}
       <p class="note">No models available.</p>
@@ -70,5 +71,6 @@
   label:has(input:disabled) { opacity: .5; cursor: default; }
   input { margin: 0; accent-color: var(--accent); }
   .name { overflow-wrap: anywhere; }
+  .vision { color: var(--muted); font-size: 11px; }
   .note { margin: 0; color: var(--muted); font-size: 13px; width: 100%; }
 </style>

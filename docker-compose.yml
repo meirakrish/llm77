@@ -64,6 +64,7 @@ services:
       CHUNK_OVERLAP: ${CHUNK_OVERLAP:-150}
       RAG_TOP_K: ${RAG_TOP_K:-3}
       RAG_MAX_DISTANCE: ${RAG_MAX_DISTANCE:-0.45}
+      MAX_CONTEXT_TOKENS: ${MAX_CONTEXT_TOKENS:-16384}
       METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-30}
     volumes:
       - lancedb-data:/data/lancedb

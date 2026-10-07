@@ -1,9 +1,18 @@
 import { AnalysisResponse } from '../schema';
 
+// A file attached to a question, as the text extracted from it
+export interface AttachedDocument {
+  name: string;
+  text: string;
+}
+
 // One turn of a conversation; the last message is the user's newest question
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  // Only on user turns: base64-encoded images for vision models, and documents whose text goes into the prompt
+  images?: string[];
+  documents?: AttachedDocument[];
 }
 
 export interface Usage {

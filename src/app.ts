@@ -2,14 +2,14 @@ import express, { Request, Response } from 'express';
 import { Queue, DefaultJobOptions } from 'bullmq';
 import type IORedis from 'ioredis';
 import { addDocument, deleteDocument, getDocument, isValidDocumentId, listDocuments, searchChunks } from './db';
-import { extractText, UnsupportedFileError } from './extract';
+import { extractText, MAX_ATTACHMENT_CHARS, UnsupportedFileError } from './extract';
 import crypto from 'crypto';
 import cors from 'cors';
 import { appendJobEvent, CANCEL_CHANNEL, cancelKey, CANCELLED_MESSAGE, workerHeartbeatKey } from './events';
 import { jobsAhead, streamJobEvents } from './job-stream';
 import { getStats, kindOf, recordJobSafely, STATS_RANGES, type StatsRange } from './metrics';
 import { config } from './config';
-import { parseMessages } from './chat';
+import { hasImages, parseMessages } from './chat';
 import type { ChatMessage } from './providers/types';
 import { getModelsInfo } from './model-info';
 import { cancelPull, isValidModelName, listPulls, startPull } from './model-pulls';
@@ -43,8 +43,8 @@ export function createApp(redisConnection: IORedis) {
 
   // Let a frontend served from another machine/origin call the API (including the SSE stream)
   app.use(cors({ origin: config.corsOrigins.includes('*') ? true : config.corsOrigins }));
-  // Large enough for pasted documents
-  app.use(express.json({ limit: '5mb' }));
+  // Large enough for pasted documents and a question's attached images
+  app.use(express.json({ limit: '25mb' }));
 
   // 1. Initialize the BullMQ Job Queue
   const llmQueue = new Queue(config.queueName, { connection: redisConnection, defaultJobOptions });
@@ -53,14 +53,20 @@ export function createApp(redisConnection: IORedis) {
 
   type Target = { model: string } | { error: string };
 
-  // Validate the requested model; no model means the default one
-  async function resolveTarget(model: unknown): Promise<Target> {
-    if (model === undefined || model === null || model === '') return { model: config.llmModel };
+  // Validate the requested model; no model means the default one. With images, it must be able to read them.
+  async function resolveTarget(model: unknown, needsVision = false): Promise<Target> {
+    const isDefault = model === undefined || model === null || model === '';
+    if (isDefault) model = config.llmModel;
     if (typeof model !== 'string') return { error: 'model must be a string.' };
+    if (isDefault && !needsVision) return { model };
 
     const info = await getModelsInfo();
     // If Ollama couldn't be listed, let the job queue; it fails or retries when it runs
-    if (!info.error && !info.localModels.includes(model)) return { error: `Model ${model} is not installed in Ollama.` };
+    if (info.error) return { model };
+    if (!isDefault && !info.localModels.includes(model)) return { error: `Model ${model} is not installed in Ollama.` };
+    if (needsVision && !info.visionModels.includes(model)) {
+      return { error: `Model ${model} can't read images. Pick a vision model, or download one in the Models tab.` };
+    }
     return { model };
   }
 
@@ -74,7 +80,7 @@ export function createApp(redisConnection: IORedis) {
     }
 
     try {
-      const target = await resolveTarget(model);
+      const target = await resolveTarget(model, hasImages(messages));
       if ('error' in target) {
         res.status(400).json({ error: target.error });
         return;
@@ -106,7 +112,7 @@ export function createApp(redisConnection: IORedis) {
 
     let target: Target;
     try {
-      target = await resolveTarget(model);
+      target = await resolveTarget(model, hasImages(messages));
     } catch (error) {
       console.error('Stream model lookup error:', error);
       res.status(500).json({ error: 'Failed to queue the stream request.' });
@@ -252,7 +258,7 @@ export function createApp(redisConnection: IORedis) {
       res.json({
         workerOnline,
         defaultModel: config.llmModel,
-        models: info.localModels.map((id) => ({ id, name: id }))
+        models: info.localModels.map((id) => ({ id, name: id, vision: info.visionModels.includes(id) }))
       });
     } catch (error) {
       console.error('Models fetch error:', error);
@@ -381,6 +387,42 @@ export function createApp(redisConnection: IORedis) {
         return;
       }
       await storeDocument(res, text, filename);
+    }
+  );
+
+  // Read the text of a file to attach to a question (raw body, like /api/documents/upload); nothing is stored
+  app.post(
+    '/api/extract',
+    express.raw({ type: () => true, limit: '20mb' }),
+    async (req: Request, res: Response): Promise<void> => {
+      const filename = req.query.filename;
+      if (!filename || typeof filename !== 'string') {
+        res.status(400).json({ error: 'A filename query parameter is required.' });
+        return;
+      }
+      if (!Buffer.isBuffer(req.body) || !req.body.length) {
+        res.status(400).json({ error: 'The file is empty.' });
+        return;
+      }
+      try {
+        const text = (await extractText(filename, req.body)).trim();
+        if (!text) {
+          res.status(400).json({ error: 'The file has no text.' });
+        } else if (text.length > MAX_ATTACHMENT_CHARS) {
+          res.status(413).json({
+            error: `${filename} is too long to attach (${text.length.toLocaleString('en')} characters; the limit is ${MAX_ATTACHMENT_CHARS.toLocaleString('en')}). Add it to the knowledge base instead.`
+          });
+        } else {
+          res.json({ text });
+        }
+      } catch (error: any) {
+        if (error instanceof UnsupportedFileError) {
+          res.status(415).json({ error: error.message });
+        } else {
+          console.error('Text extraction error:', error);
+          res.status(500).json({ error: 'Failed to read the file.' });
+        }
+      }
     }
   );
 
